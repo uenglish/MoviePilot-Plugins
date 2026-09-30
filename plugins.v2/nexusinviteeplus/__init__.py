@@ -418,7 +418,7 @@ class NexusInviteePlus(_PluginBase):
     # 插件图标
     plugin_icon = "https://raw.githubusercontent.com/uenglish/MoviePilot-Plugins/main/icons/harem.png"
     # 插件版本
-    plugin_version = "1.3.3"
+    plugin_version = "1.3.4"
     # 插件作者
     plugin_author = "madrays, serendipity"
     # 作者主页
@@ -436,12 +436,16 @@ class NexusInviteePlus(_PluginBase):
     # 详情页站点名关键词过滤（服务端过滤，相当于页面搜索）
     _page_filter = ""
 
+    # 站点选择中的「全部」标记：持久化后，后续新增站点会自动纳入，无需重新保存配置
+    _ALL_SITES = "all"
+
     # 私有属性
     _enabled = False
     _notify = False
     _cron = "0 9 * * *"  # 默认每天早上9点检查一次
     _onlyonce = False
-    _nexus_sites = []  # 支持多选的站点列表
+    _nexus_sites = []  # 支持多选的站点列表（含 "all" 全部标记）
+    _all_sites: bool = False  # 是否选择了「全部（含后续新增站点）」
     
     # 站点助手
     sites: SitesHelper = None
@@ -536,24 +540,29 @@ class NexusInviteePlus(_PluginBase):
             self._page_filter = (config.get("page_filter") or "").strip()
 
             # 处理站点ID
+            raw_site_ids = config.get("site_ids") or []
+            self._all_sites = any(str(item).lower() == self._ALL_SITES for item in raw_site_ids)
             self._nexus_sites = []
-            if "site_ids" in config:
-                for site_id in config.get("site_ids", []):
-                    # 确保site_id为整数
-                    try:
-                        if isinstance(site_id, str) and site_id.isdigit():
-                            self._nexus_sites.append(int(site_id))
-                        elif isinstance(site_id, int):
-                            self._nexus_sites.append(site_id)
-                    except:
-                        pass           
+            for site_id in raw_site_ids:
+                try:
+                    if isinstance(site_id, str) and site_id.isdigit():
+                        self._nexus_sites.append(int(site_id))
+                    elif isinstance(site_id, int):
+                        self._nexus_sites.append(site_id)
+                except Exception:
+                    pass
+            if self._all_sites:
+                # 保留「全部」标记本身，执行时展开为所有站点（含后续新增）
+                self._nexus_sites = [self._ALL_SITES]
             # 保存配置
             self.__update_config()
         
         # 如果启用了插件
         if self._enabled:
             # 检查是否配置了站点
-            if not self._nexus_sites:
+            if self._all_sites:
+                logger.info("站点选择为「全部（含后续新增站点）」，后续新增站点会自动纳入")
+            elif not self._nexus_sites:
                 logger.info("未选择任何站点，将使用所有站点")
             else:
                 logger.info(f"后宫管理系统初始化完成，已选择 {len(self._nexus_sites)} 个站点")
@@ -1079,7 +1088,10 @@ class NexusInviteePlus(_PluginBase):
         配置页面
         """
         # 获取支持的站点列表
-        site_options = []
+        site_options = [{
+            "title": "全部（含后续新增站点）",
+            "value": "all"
+        }]
         for site in self.sites.get_indexers():
             site_name = site.get("name", "")
             site_options.append({
@@ -1163,7 +1175,7 @@ class NexusInviteePlus(_PluginBase):
                                             'chips': True,
                                             'clearable': True,
                                             'persistent-hint': True,
-                                            'hint': '选择刷新的站点，支持多选，不选择则默认所有站点，刷新方式为增量刷新（不清空旧数据）'
+                                            'hint': '选择刷新的站点，支持多选；选「全部（含后续新增站点）」后后续新增站点会自动纳入，无需再改配置；刷新为增量刷新（不清空旧数据）'
                                         }
                                     },
                                     {
@@ -3463,7 +3475,8 @@ class NexusInviteePlus(_PluginBase):
                 }
 
             # 先验证此站点是否在用户选择的站点列表中
-            if self._nexus_sites and str(site_id) not in [str(x) for x in self._nexus_sites]:
+            if (not self._all_sites) and self._nexus_sites and \
+                    str(site_id) not in [str(x) for x in self._nexus_sites]:
                 logger.warning(f"站点 {site_name} 不在用户选择的站点列表中，跳过处理")
                 return {
                     "error": "站点未被选择",
@@ -3880,9 +3893,12 @@ class NexusInviteePlus(_PluginBase):
                 all_sites = [site for site in all_sites if site.get("name") in wanted]
                 logger.info(f"本次仅刷新指定站点: {', '.join(sorted(wanted))}")
             
-            # 筛选站点配置 - 如果_nexus_sites为空，则选择所有站点
+            # 筛选站点配置 - 「全部」标记或未选择站点时选择所有站点（含后续新增）
             selected_sites = []
-            if not self._nexus_sites:
+            if self._all_sites:
+                logger.info(f"站点选择为「全部」，本次刷新覆盖 {len(all_sites)} 个站点")
+                selected_sites = all_sites
+            elif not self._nexus_sites:
                 logger.info("未选择任何站点，将使用所有站点")
                 selected_sites = all_sites
             else:
@@ -4194,20 +4210,23 @@ class NexusInviteePlus(_PluginBase):
             self._onlyonce = request.get("onlyonce", False)
             
             # 获取选中站点列表
+            raw_site_ids = request.get("site_ids") or []
+            self._all_sites = any(str(item).lower() == self._ALL_SITES for item in raw_site_ids)
             self._nexus_sites = []
-            if "site_ids" in request:
-                for site_id in request.get("site_ids", []):
-                    # 确保site_id为整数
-                    try:
-                        if isinstance(site_id, str) and site_id.isdigit():
-                            self._nexus_sites.append(int(site_id))
-                        elif isinstance(site_id, int):
-                            self._nexus_sites.append(site_id)
-                    except:
-                        pass
-            
+            for site_id in raw_site_ids:
+                try:
+                    if isinstance(site_id, str) and site_id.isdigit():
+                        self._nexus_sites.append(int(site_id))
+                    elif isinstance(site_id, int):
+                        self._nexus_sites.append(site_id)
+                except Exception:
+                    pass
+            if self._all_sites:
+                self._nexus_sites = [self._ALL_SITES]
+
             # 记录站点ID，用于调试
-            logger.info(f"已选择站点ID: {self._nexus_sites}")
+            logger.info(f"已选择站点ID: {self._nexus_sites}"
+                        f"{'（全部，含后续新增站点）' if self._all_sites else ''}")
             
             # 保存配置
             self.__update_config()
