@@ -1,3 +1,4 @@
+import re
 from typing import Tuple
 
 from ruamel.yaml import CommentedMap
@@ -52,11 +53,7 @@ class HDCity(_ISiteSigninHandler):
             logger.error(f"{site} 签到失败，请检查站点连通性")
             return False, '签到失败，请检查站点连通性'
 
-        if "login" in html_text:
-            logger.error(f"{site} 签到失败，Cookie已失效")
-            return False, '签到失败，Cookie已失效'
-
-        # 判断是否已签到
+        # 判断是否已签到（先看签到结果，页面 JS 里的 login 字样不代表 Cookie 失效）
         # '已连续签到278天，此次签到您获得了100魔力值奖励!'
         if self._success_text in html_text:
             logger.info(f"{site} 签到成功")
@@ -64,5 +61,11 @@ class HDCity(_ISiteSigninHandler):
         if self._repeat_text in html_text:
             logger.info(f"{site} 今日已签到")
             return True, '今日已签到'
-        logger.error(f"{site} 签到失败，签到接口返回 {html_text}")
+
+        # 只有明确的登录页特征才认为 Cookie 失效
+        if re.search(r"login\.php|takelogin\.php|请先登录|需要登录|Not logged in", html_text, re.IGNORECASE):
+            logger.error(f"{site} 签到失败，Cookie已失效")
+            return False, '签到失败，Cookie已失效'
+
+        logger.error(f"{site} 签到失败，签到接口返回 {(html_text or '')[:200]}")
         return False, '签到失败'

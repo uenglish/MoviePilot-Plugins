@@ -897,3 +897,105 @@ def test_rousipro_reports_invalid_key(monkeypatch):
                                         "apikey": "pgk_bad", "ua": "UA"})
     assert state is False
     assert "权限不足" in message or "失效" in message
+
+def test_turnstile_detection():
+    """识别 Cloudflare Turnstile 人机验证页面。"""
+    from app.plugins.autosigninplus.sites.nexusphp_attendance import NexusPhpAttendance
+
+    assert NexusPhpAttendance.is_turnstile('<form action="attendance.php"><div class="cf-turnstile" data-sitekey="x"></div></form>')
+    assert NexusPhpAttendance.is_turnstile('<script src="https://challenges.cloudflare.com/turnstile/v0/api.js"></script>')
+    assert not NexusPhpAttendance.is_turnstile('<form action="attendance.php"><input type="submit"></form>')
+    assert not NexusPhpAttendance.is_turnstile("")
+
+
+def test_turnstile_signin_uses_browser(monkeypatch):
+    """Turnstile 页面：普通请求拿不到 token，改走浏览器仿真并由回查确认结果。"""
+    from app.plugins.autosigninplus.sites.nexusphp_attendance import NexusPhpAttendance
+
+    turnstile_page = ('<form id="attendance-form" action="attendance.php">'
+                      '<input type="hidden" name="cf-token"><div class="cf-turnstile" data-sitekey="x"></div></form>')
+    used = {"browser": 0}
+
+    def fake_request_html(cls, url=None, site_info=None, method=None, data=None):
+        return 200, turnstile_page
+
+    def fake_browser(cls, url=None, site_info=None, attempts=None):
+        used["browser"] += 1
+        return turnstile_page, "auth=refreshed"
+
+    monkeypatch.setattr(NexusPhpAttendance, "request_html", classmethod(fake_request_html))
+    monkeypatch.setattr(NexusPhpAttendance, "is_not_login", classmethod(lambda cls, html: False))
+    monkeypatch.setattr(NexusPhpAttendance, "browser_page_source", classmethod(fake_browser))
+    monkeypatch.setattr(NexusPhpAttendance, "confirm_signed", classmethod(
+        lambda cls, site=None, checkin_url=None, site_info=None, attempts=3, delay=4: "签到成功"))
+
+    state, message = NexusPhpAttendance.sign_in(
+        {"name": "观众", "url": "https://audiences.me/", "cookie": "auth=x"}, allow_browser=True)
+
+    assert state is True
+    assert message == "签到成功"
+    assert used["browser"] == 1
+
+
+def test_turnstile_without_browser_permission(monkeypatch):
+    """未允许浏览器仿真的站点遇到 Turnstile 时给出明确提示。"""
+    from app.plugins.autosigninplus.sites.nexusphp_attendance import NexusPhpAttendance
+
+    turnstile_page = '<form action="attendance.php"><div class="cf-turnstile" data-sitekey="x"></div></form>'
+    monkeypatch.setattr(NexusPhpAttendance, "request_html",
+                        classmethod(lambda cls, url=None, site_info=None, method=None, data=None: (200, turnstile_page)))
+    monkeypatch.setattr(NexusPhpAttendance, "is_not_login", classmethod(lambda cls, html: False))
+
+    state, message = NexusPhpAttendance.sign_in(
+        {"name": "站点", "url": "https://example.com/", "cookie": "auth=x"}, allow_browser=False)
+    assert state is False
+    assert "Turnstile" in message
+
+
+def test_post_submit_confirmation_avoids_false_failure(monkeypatch):
+    """提交后是中间态页面时不算失败：回查签到页确认成功即视为签到成功。"""
+    from app.plugins.autosigninplus.sites import nexusphp_attendance as attendance_module
+    from app.plugins.autosigninplus.sites.nexusphp_attendance import NexusPhpAttendance
+
+    captcha_page = ('<form action="attendance.php"><input type="text" name="imagestring">'
+                    '<input type="submit" value="签到"></form>')
+    signed_page = "<html><h2>签到成功</h2>这是您的第 <b>35</b> 次签到</html>"
+    responses = [(200, captcha_page), (200, "<html>跳转中…</html>"), (200, signed_page)]
+
+    def fake_request_html(cls, url=None, site_info=None, method=None, data=None):
+        return responses.pop(0) if responses else (200, "")
+
+    monkeypatch.setattr(NexusPhpAttendance, "request_html", classmethod(fake_request_html))
+    monkeypatch.setattr(NexusPhpAttendance, "is_not_login", classmethod(lambda cls, html: False))
+    monkeypatch.setattr(NexusPhpAttendance, "solve_captcha", classmethod(lambda cls, html, site_info: "ABCD"))
+    monkeypatch.setattr(attendance_module.time, "sleep", lambda *_: None)
+
+    state, message = NexusPhpAttendance.sign_in(
+        {"name": "思齐", "url": "https://si-qi.xyz/", "cookie": "auth=x"}, allow_browser=True)
+
+    assert state is True
+    assert "签到成功" in message
+
+def test_hdcity_ignores_login_word_in_page(monkeypatch):
+    """城市：页面 JS 里出现 login 字样不算 Cookie 失效，签到结果优先。"""
+    from app.plugins.autosigninplus.sites.hdcity import HDCity
+
+    page = '<html><script>var loginModal = "#login-modal";</script><div>已签到</div></html>'
+    monkeypatch.setattr(HDCity, "get_page_source",
+                        staticmethod(lambda **kwargs: page))
+
+    state, message = HDCity().signin({"name": "城市", "url": "https://hdcity.city/", "cookie": "a=b"})
+    assert state is True
+    assert message == "今日已签到"
+
+
+def test_hdcity_detects_expired_cookie(monkeypatch):
+    """城市：真正的登录页才报 Cookie 失效。"""
+    from app.plugins.autosigninplus.sites.hdcity import HDCity
+
+    page = '<html><body><a href="login.php">请先登录</a></body></html>'
+    monkeypatch.setattr(HDCity, "get_page_source", staticmethod(lambda **kwargs: page))
+
+    state, message = HDCity().signin({"name": "城市", "url": "https://hdcity.city/", "cookie": "a=b"})
+    assert state is False
+    assert "Cookie已失效" in message

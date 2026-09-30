@@ -134,6 +134,34 @@ class NexusPhpAttendance:
                 or cls.is_cloudflare_challenge(status_code, html))
 
     @classmethod
+    def is_turnstile(cls, html: str) -> bool:
+        """
+        判断页面是否包含 Cloudflare Turnstile 人机验证
+
+        这类页面的签到表单只有隐藏字段（cf-token），由验证通过后的 JS 自动提交，
+        普通请求无法完成，需要浏览器仿真。
+        """
+        if not html:
+            return False
+        return bool(re.search(r"cf-turnstile|challenges\.cloudflare\.com/turnstile", html, re.IGNORECASE))
+
+    @classmethod
+    def confirm_signed(cls, site: str, checkin_url: str, site_info,
+                       attempts: int = 3, delay: int = 4) -> str:
+        """
+        提交表单后回查签到页确认结果
+
+        部分站点提交后会跳转或返回中间态页面，直接判定失败会误报；
+        回查只要能确认签到状态就返回对应提示，否则返回空字符串。
+        """
+        for _ in range(1, max(1, attempts) + 1):
+            time.sleep(delay)
+            _, html = cls.request_html(url=checkin_url, site_info=site_info)
+            if html and cls.is_signed(html):
+                return cls.signed_message(html)
+        return ""
+
+    @classmethod
     def is_signed(cls, html: str) -> bool:
         """
         判断页面是否已是签到完成的状态
@@ -391,6 +419,11 @@ class NexusPhpAttendance:
                 # 挑战通过后页面仍会继续渲染，需等页面稳定或已能识别出签到状态
                 if cls.is_signed(html) or cls.is_login_page(html) or cls.parse_form(html, url):
                     break
+                if cls.is_turnstile(html):
+                    # Turnstile 通过后由 JS 自动提交签到表单，需继续等待签到结果
+                    stable = html
+                    time.sleep(2)
+                    continue
                 if html == stable and cls.is_site_page(html):
                     break
                 stable = html
@@ -450,6 +483,27 @@ class NexusPhpAttendance:
             logger.info(f"{site} 签到成功")
             return True, cls.signed_message(html)
 
+        # Cloudflare Turnstile 人机验证：表单由 JS 自动提交，改用浏览器仿真
+        if cls.is_turnstile(html):
+            if not allow_browser:
+                logger.error(f"{site} 签到失败，站点需要 Cloudflare Turnstile 人机验证")
+                return False, "签到失败，站点需要 Cloudflare Turnstile 人机验证！"
+            logger.info(f"{site} 命中 Cloudflare Turnstile 人机验证，切换浏览器仿真")
+            html, browser_cookie = cls.browser_page_source(url=checkin_url, site_info=site_info)
+            if browser_cookie:
+                # 浏览器可能刷新了 Cookie，后续请求沿用
+                site_info = dict(site_info)
+                site_info["cookie"] = browser_cookie
+            if cls.is_signed(html):
+                logger.info(f"{site} 签到成功")
+                return True, cls.signed_message(html)
+            message = cls.confirm_signed(site=site, checkin_url=checkin_url, site_info=site_info)
+            if message:
+                logger.info(f"{site} 签到成功")
+                return True, message
+            logger.error(f"{site} 签到失败，人机验证未通过或签到未生效")
+            return False, "签到失败，Cloudflare Turnstile 人机验证未通过！"
+
         # 需要提交验证码表单
         form = cls.parse_form(html, str(site_info.get("url")))
         if not form:
@@ -475,6 +529,12 @@ class NexusPhpAttendance:
         if cls.is_signed(html):
             logger.info(f"{site} 签到成功")
             return True, cls.signed_message(html)
+
+        # 提交后可能是跳转或中间态页面，先回查签到页确认结果，避免误报失败
+        message = cls.confirm_signed(site=site, checkin_url=checkin_url, site_info=site_info)
+        if message:
+            logger.info(f"{site} 签到成功")
+            return True, message
 
         if any(re.search(pattern, html, re.IGNORECASE) for pattern in cls._captcha_error_patterns):
             logger.error(f"{site} 签到失败，验证码错误")
