@@ -16,6 +16,7 @@ NexusPHP 的签到实现有两种形态：
   因此这里直接使用 CloakBrowser（MoviePilot 依赖的浏览器实现）写入浏览器 Cookie 罐。
 """
 import re
+import threading
 import time
 from typing import Dict, Iterable, Optional, Tuple
 from urllib.parse import urljoin, urlparse
@@ -93,6 +94,9 @@ class NexusPhpAttendance:
         r"[验驗][证證]圖片",
         r"security code",
     )
+
+    # 浏览器仿真全局互斥：Playwright 同步接口不是线程安全的，多站点并发过盾会互相阻塞
+    _browser_lock = threading.Lock()
 
     # 浏览器等待 WAF 挑战通过的最长时间（秒）
     _browser_challenge_timeout = 120
@@ -333,14 +337,16 @@ class NexusPhpAttendance:
         site = site_info.get("name")
         attempts = max(1, attempts or cls._browser_attempts)
         result = ("", "")
-        for attempt in range(1, attempts + 1):
-            html, cookie = cls._browser_once(url=url, site_info=site_info)
-            result = (html, cookie)
-            if html and not cls.is_challenge(None, html):
-                return html, cookie
-            logger.warn(f"{site} 浏览器仿真第 {attempt} 次未通过 WAF 挑战")
-            if attempt < attempts:
-                time.sleep(3)
+        # 同一时刻只允许一个站点使用浏览器仿真，避免 Playwright 同步接口被并发使用而卡死
+        with cls._browser_lock:
+            for attempt in range(1, attempts + 1):
+                html, cookie = cls._browser_once(url=url, site_info=site_info)
+                result = (html, cookie)
+                if html and not cls.is_challenge(None, html):
+                    return html, cookie
+                logger.warn(f"{site} 浏览器仿真第 {attempt} 次未通过 WAF 挑战")
+                if attempt < attempts:
+                    time.sleep(3)
         return result
 
     @classmethod

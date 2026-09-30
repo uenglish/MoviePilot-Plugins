@@ -2,6 +2,7 @@ import re
 import traceback
 from datetime import datetime, timedelta
 from multiprocessing.dummy import Pool as ThreadPool
+from multiprocessing import TimeoutError as PoolTimeoutError
 from multiprocessing.pool import ThreadPool
 from typing import Any, List, Dict, Tuple, Optional
 from urllib.parse import urljoin
@@ -82,7 +83,7 @@ class AutoSignInPlus(_PluginBase):
     # 插件图标
     plugin_icon = "signin.png"
     # 插件版本
-    plugin_version = "2.9.14"
+    plugin_version = "2.9.15"
     # 插件作者
     plugin_author = "thsrite, serendipity"
     # 作者主页
@@ -99,6 +100,9 @@ class AutoSignInPlus(_PluginBase):
 
     # 历史记录保留天数（详情页展示最近 7 天，这里保留 14 天便于回溯）
     _history_days = 14
+
+    # 单个站点最长执行时间（秒）：浏览器仿真等外部依赖可能永久阻塞，超时不再等待
+    _site_timeout = 300
 
     # 插件改名前的旧插件ID，用于自动迁移历史与配置
     _legacy_plugin_id = "AutoSignIn"
@@ -184,6 +188,34 @@ class AutoSignInPlus(_PluginBase):
     def get_state(self) -> bool:
         """返回插件启用状态。"""
         return self._enabled
+
+    def __run_sites(self, func, sites: list, type_str: str) -> list:
+        """
+        并行执行站点任务，单个站点卡住不再拖死整轮执行。
+
+        multiprocessing 的 map 会一直等待全部任务返回，而浏览器仿真等外部依赖可能永久阻塞，
+        一旦卡住本轮结果就无法落库、插件也无法停止。这里改为逐站点收集结果，超时按失败处理，
+        且单个卡住的任务不会占用全部并发位。
+        """
+        status = []
+        pool = ThreadPool(min(len(sites), int(self._queue_cnt)))
+        try:
+            futures = [(site, pool.apply_async(func, (site,))) for site in sites]
+            for site, future in futures:
+                site_name = site.get("name")
+                try:
+                    status.append(future.get(timeout=self._site_timeout))
+                except (TimeoutError, PoolTimeoutError):
+                    logger.error(f"{site_name} {type_str}失败：执行超过 {self._site_timeout} 秒无响应，"
+                                 f"本轮跳过，将在下次执行时重试")
+                    status.append((site_name, f"{type_str}失败：执行超时，已跳过"))
+                except Exception as err:
+                    logger.error(f"{site_name} {type_str}异常：{str(err)}")
+                    status.append((site_name, f"{type_str}失败：{str(err)}"))
+        finally:
+            # 卡住的任务无法中断，终止线程池以免影响插件停止与后续执行
+            pool.terminate()
+        return status
 
     def __migrate_legacy_data(self):
         """插件改名后自动继承旧插件的历史记录，避免详情页历史为空。"""
@@ -1648,12 +1680,9 @@ class AutoSignInPlus(_PluginBase):
 
         # 执行签到
         logger.info(f"开始执行{type_str}任务 ...")
-        if type_str == "签到":
-            with ThreadPool(min(len(do_sites), int(self._queue_cnt))) as p:
-                status = p.map(self.signin_site, do_sites)
-        else:
-            with ThreadPool(min(len(do_sites), int(self._queue_cnt))) as p:
-                status = p.map(self.login_site, do_sites)
+        status = self.__run_sites(func=self.signin_site if type_str == "签到" else self.login_site,
+                                  sites=do_sites,
+                                  type_str=type_str)
 
         if status:
             logger.info(f"站点{type_str}任务完成！")

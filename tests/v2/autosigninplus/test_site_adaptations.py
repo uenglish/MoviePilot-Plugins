@@ -6,6 +6,7 @@
 import base64
 import hashlib
 import json
+import re
 import struct
 
 import pytest
@@ -622,3 +623,63 @@ def test_legacy_migration_skips_when_data_exists():
     plugin = FakePlugin()
     plugin._AutoSignInPlus__migrate_legacy_data()
     assert plugin.saved == {}
+
+def test_run_sites_times_out_without_blocking_others():
+    """单站点卡住时按失败记录并跳过，其余站点照常汇总（不再拖死整轮、不再影响落库）。"""
+    import time as _time
+
+    plugin = AutoSignInPlus.__new__(AutoSignInPlus)
+    plugin._queue_cnt = 3
+    plugin._site_timeout = 1
+
+    def fake_signin(site):
+        if site["name"] == "卡住":
+            _time.sleep(30)
+        return site["name"], "签到成功"
+
+    sites = [{"name": "卡住"}, {"name": "正常1"}, {"name": "正常2"}]
+    status = plugin._AutoSignInPlus__run_sites(func=fake_signin, sites=sites, type_str="签到")
+
+    assert ("正常1", "签到成功") in status
+    assert ("正常2", "签到成功") in status
+    hung = [item for item in status if item[0] == "卡住"][0]
+    # 超时结果里带“失败”，命中默认重试关键词，下次执行会重试
+    assert "失败" in hung[1]
+    assert re.search("错误|失败", hung[1])
+
+
+def test_browser_simulation_is_serialized(monkeypatch):
+    """浏览器仿真串行执行：并发站点不会同时进入 Playwright（同步接口非线程安全）。"""
+    import threading
+    import time as _time
+
+    from app.plugins.autosigninplus.sites.nexusphp_attendance import NexusPhpAttendance
+
+    active = []
+    peak = []
+
+    def fake_browser_once(cls, url=None, site_info=None):
+        active.append(1)
+        peak.append(len(active))
+        _time.sleep(0.15)
+        active.pop()
+        return "<html>签到成功</html>", "cookie=1"
+
+    monkeypatch.setattr(NexusPhpAttendance, "_browser_once", classmethod(fake_browser_once))
+    monkeypatch.setattr(NexusPhpAttendance, "is_challenge",
+                        classmethod(lambda cls, res, html: False))
+
+    results = []
+
+    def worker():
+        results.append(NexusPhpAttendance.browser_page_source(
+            url="https://example.com/", site_info={"name": "测试"}))
+
+    threads = [threading.Thread(target=worker) for _ in range(3)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+
+    assert len(results) == 3
+    assert max(peak) == 1, "浏览器仿真必须串行执行"
