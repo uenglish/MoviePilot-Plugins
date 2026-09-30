@@ -8,7 +8,7 @@ from typing import Any, Dict
 
 from app.log import logger
 
-from ..site_access import COOKIE_EXPIRED_REASON, get
+from ..site_access import COOKIE_EXPIRED_REASON, get, swap_www
 from . import _ISiteHandler
 
 
@@ -37,8 +37,15 @@ class YemaHandler(_ISiteHandler):
             "invitees": [],
         }
         base_url = (site_info.get("url") or "").strip()
+        # 新平台接口只在 www 主机上可用（裸域名会返回前端页面）
+        alt_base = swap_www(base_url)
         try:
             response = get(session, base_url, self._profile_api)
+            if not (response.text or "").strip().startswith("{"):
+                if alt_base:
+                    logger.debug(f"站点 {site_name} 裸域名未返回接口数据，改用 {alt_base}")
+                    base_url = alt_base
+                    response = get(session, base_url, self._profile_api)
             if response.status_code in (401, 403) or "login" in (response.url or "").lower():
                 result["invite_status"]["reason"] = COOKIE_EXPIRED_REASON
                 result["error"] = COOKIE_EXPIRED_REASON

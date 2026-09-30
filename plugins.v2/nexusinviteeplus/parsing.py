@@ -79,3 +79,55 @@ def sanitize_invitees(invitees: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         invitee["ratio_label"] = label
         cleaned.append(invitee)
     return cleaned
+
+
+# 各站点「不可邀请」提示的常见文案（含简体/繁体/英文措辞差异）
+_INVITE_REASON_PATTERNS = (
+    r"当前邀请权限为[^。;<]{0,40}无法邀请[。.]?",
+    r"您的权限不够[，,]?无法邀请[。.]?",
+    r"只有[^，。;<]{0,24}才能(?:发送|發送)(?:邀请|邀請)[。.]?",
+    r"[^，。;<]{0,30}(?:及以上|或以上)[^，。;<]{0,12}(?:等级|等級)?[^，。;<]{0,6}"
+    r"(?:才可以|才能)[^，。;<]{0,4}(?:发送|發送)(?:邀请|邀請)[。.]?",
+    r"[^，。;<]{0,24}才可以(?:发送|發送)(?:邀请|邀請)[。.]?",
+    r"(?:发送|發送)(?:邀请|邀請)的最低(?:等级|等級)是[:：]\s*\S+",
+    r"(?:购买|購買)(?:邀请|邀請)的最低(?:等级|等級)是[:：]\s*\S+",
+    r"(?:邀请|邀請)系统已关闭",
+    r"(?:邀请|邀請)已?关闭",
+    r"当前账户上限数已到",
+    r"已达到最大(?:邀请|邀請)数",
+    r"没有剩余(?:邀请|邀請)",
+    r"(?:邀请|邀請)(?:数量|數量|名额|名額)不足",
+)
+
+_CONTROL_REASON_WORDS = ("不足", "及以上", "等級", "等级", "权限", "權限", "上限")
+
+
+def _clean_reason(reason: str) -> str:
+    """清理原因文本里的“这里返回”等页面拼接残留。"""
+    reason = re.sub(r"\s*这[里裏].{0,4}返回。?", "", reason)
+    reason = re.sub(r"\s+", " ", reason or "").strip()
+    return reason.strip("。. ")
+
+
+def extract_invite_reason(html: str) -> str:
+    """
+    从页面文本中提取不可邀请的具体原因。
+
+    兼容中英文/简繁措辞，并会读取 disabled 按钮/输入框的文案
+    （如 NicePT 的 “邀請數量不足”，这类文案不在可见文本里）。
+    """
+    if not html:
+        return ""
+    plain = re.sub(r"<[^>]+>", " ", html)
+    plain = re.sub(r"\s+", " ", plain)
+    for pattern in _INVITE_REASON_PATTERNS:
+        match = re.search(pattern, plain)
+        if match:
+            reason = _clean_reason(match.group(0))
+            if reason:
+                return reason
+    for control in re.finditer(r'(?:value|title|aria-label)="([^"]{2,60})"', html):
+        value = _clean_reason(control.group(1))
+        if value and any(word in value for word in _CONTROL_REASON_WORDS):
+            return value
+    return ""

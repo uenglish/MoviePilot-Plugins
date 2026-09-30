@@ -32,6 +32,7 @@ from .module_loader import ModuleLoader
 from .parsing import sanitize_invitees
 from .site_access import (
     COOKIE_EXPIRED_REASON,
+    has_user_id as site_access_has_user_id,
     classify as classify_site_response,
     detect_schema,
     normalize_cookie,
@@ -417,7 +418,7 @@ class NexusInviteePlus(_PluginBase):
     # 插件图标
     plugin_icon = "https://raw.githubusercontent.com/uenglish/MoviePilot-Plugins/main/icons/harem.png"
     # 插件版本
-    plugin_version = "1.3.0"
+    plugin_version = "1.3.1"
     # 插件作者
     plugin_author = "madrays, serendipity"
     # 作者主页
@@ -3521,22 +3522,36 @@ class NexusInviteePlus(_PluginBase):
                     'sec-fetch-site': 'same-origin'
                 })
                 
-                # 尝试验证Cookie有效性
-                test_url = site_url
-                test_response = session.get(test_url, timeout=(10, 30))
-                access_reason = classify_site_response(test_response)
-                if access_reason == COOKIE_EXPIRED_REASON:
-                    # 部分站点裸域名与 www 域名会话不通用（如 PT时间），换一种主机名重试
-                    alt_url = swap_www(site_url)
-                    if alt_url:
-                        alt_response = session.get(alt_url, timeout=(10, 30))
-                        if classify_site_response(alt_response) is None:
-                            logger.info(f"站点 {site_name} 改用备用域名访问成功: {alt_url}")
-                            site_url = alt_url
+                # 选择可用基址：部分站点裸域名与 www 域名的会话不通用（如 PT时间），
+                # 依次探测候选域名，优先使用能确认登录态（含数字用户ID）的那个。
+                candidate_bases = [site_url]
+                alt_base = swap_www(site_url)
+                if alt_base and alt_base != site_url:
+                    candidate_bases.append(alt_base)
+                test_response = None
+                access_reason = None
+                loose_candidate = None
+                error_candidate = None
+                for candidate in candidate_bases:
+                    candidate_response = session.get(candidate, timeout=(10, 30))
+                    candidate_reason = classify_site_response(candidate_response)
+                    if candidate_reason is None and site_access_has_user_id(candidate_response.text):
+                        test_response = candidate_response
+                        if candidate != site_url:
+                            logger.info(f"站点 {site_name} 改用备用域名访问成功: {candidate}")
+                            site_url = candidate
                             site_info = dict(site_info)
-                            site_info["url"] = alt_url
-                            test_response = alt_response
-                            access_reason = None
+                            site_info["url"] = candidate
+                        break
+                    if candidate_reason is None:
+                        loose_candidate = loose_candidate or candidate_response
+                    else:
+                        error_candidate = error_candidate or (candidate_response, candidate_reason)
+                if test_response is None:
+                    if loose_candidate is not None:
+                        test_response = loose_candidate
+                    elif error_candidate is not None:
+                        test_response, access_reason = error_candidate
                 if access_reason:
                     logger.error(f"站点 {site_name} 访问验证失败: {access_reason}")
                     return {

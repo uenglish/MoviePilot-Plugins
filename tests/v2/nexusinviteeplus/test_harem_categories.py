@@ -31,6 +31,7 @@ def _load(name):
 
 
 categories = _load("categories")
+parsing = _load("parsing")
 trend = _load("trend")
 site_access = _load("site_access")
 
@@ -120,3 +121,20 @@ def test_build_snapshot_shape():
         categories.classify, 123)
     assert snapshot["time"] == 123
     assert snapshot["sites"]["A站"] == {"category": "invitable", "invitees": 0, "permanent": 1, "temporary": 0}
+
+
+@pytest.mark.parametrize("html, expected", [
+    ("<td>对不起，只有 能天使 及以上的用户才能发送邀请。</td>",
+     "只有 能天使 及以上的用户才能发送邀请"),
+    ("<b>发送邀请的最低等级是： </b><span>宅护法</span>", "发送邀请的最低等级是： 宅护法"),
+    ('<input disabled type="submit" value="邀請數量不足"/>', "邀請數量不足"),
+    ("<div>Elite User(筑基) 或以上等級才可以發送邀請这里返回。</div>",
+     "Elite User(筑基) 或以上等級才可以發送邀請"),
+    ("<div>当前邀请权限为 Crazy User 及以上，您的权限不够，无法邀请。</div>",
+     "当前邀请权限为 Crazy User 及以上，您的权限不够，无法邀请"),
+    ("<div>邀请系统已关闭</div>", "邀请系统已关闭"),
+    ("<div>没有相关内容</div>", ""),
+])
+def test_extract_invite_reason(html, expected):
+    """各站点「不可邀请」文案（含繁体与控件文案）都能提取出具体原因。"""
+    assert parsing.extract_invite_reason(html) == expected

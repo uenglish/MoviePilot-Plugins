@@ -11,6 +11,7 @@ import requests
 from bs4 import BeautifulSoup
 
 from app.log import logger
+from ..parsing import extract_invite_reason
 from . import _ISiteHandler
 
 
@@ -394,7 +395,9 @@ class HdkylinHandler(_ISiteHandler):
             pass
         else: # 未知状态
             invite_status["can_invite"] = False
-            invite_status["reason"] = "无法发送邀请，请手动查看原因"
+            # 先从页面文本/控件文案中提取具体原因，提取不到再给通用提示
+            specific_reason = extract_invite_reason(html_content or "")
+            invite_status["reason"] = specific_reason or "无法发送邀请，请手动查看原因"
 
         return invite_status
 

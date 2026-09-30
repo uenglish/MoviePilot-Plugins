@@ -9,6 +9,7 @@ import requests
 from bs4 import BeautifulSoup
 
 from app.log import logger
+from ..parsing import extract_invite_reason
 from . import _ISiteHandler
 
 
@@ -444,8 +445,10 @@ class ButterflyHandler(_ISiteHandler):
                     # 如果既没有对不起消息也没有表单，可能是其他限制
                     if not result["invite_status"]["reason"]:
                         result["invite_status"]["can_invite"] = False
-                        result["invite_status"]["reason"] = "无法发送邀请，请查看页面了解原因"
-                        logger.debug(f"站点 {site_name} 发送页面无法找到表单或错误消息")
+                        # 先尝试从页面文本/控件文案里提取具体原因（如最低等级要求）
+                        specific_reason = extract_invite_reason(str(soup))
+                        result["invite_status"]["reason"] = specific_reason or "无法发送邀请，请查看页面了解原因"
+                        logger.debug(f"站点 {site_name} 发送页面无法找到表单，原因: {result['invite_status']['reason']}")
         
         # 蝶粉站点特殊处理
         # 直接查找border="1"的表格，这通常是用户列表表格

@@ -10,6 +10,7 @@ import requests
 from bs4 import BeautifulSoup
 
 from app.log import logger
+from ..parsing import extract_invite_reason
 from . import _ISiteHandler
 
 
@@ -318,7 +319,15 @@ class NexusPhpHandler(_ISiteHandler):
                         elif not send_can_invite:
                             # 有原因且不可邀请的情况
                             result["invite_status"]["can_invite"] = False
-                            result["invite_status"]["reason"] = send_reason
+                            generic_reasons = ("无法发送邀请，请手动查看原因",
+                                               "无法发送邀请，请查看页面了解原因")
+                            current_reason = result["invite_status"].get("reason") or ""
+                            if send_reason in generic_reasons and current_reason and \
+                                    current_reason not in generic_reasons:
+                                logger.debug(f"站点 {site_name} 发送页面未给出具体原因，"
+                                             f"保留主页面原因: {current_reason}")
+                            else:
+                                result["invite_status"]["reason"] = send_reason
                             logger.debug(f"站点 {site_name} 从发送页面更新了邀请状态: {send_reason}")
                     elif send_can_invite:
                         # 无原因但可邀请的情况
@@ -500,9 +509,9 @@ class NexusPhpHandler(_ISiteHandler):
                 # 检查是否有其他表格
                 any_tables = soup.select('table')
                 if not any_tables:
-                    result["invite_status"]["reason"] = "页面解析错误，可能未登录或者站点结构特殊"
-                    logger.error(f"站点 {site_name} 邀请页面解析失败：没有找到任何表格")
-                    return result
+                    # 部分站点（如城市 hdcity）不使用表格布局，继续走文本原因提取而不是直接失败
+                    logger.info(f"站点 {site_name} 邀请页面没有表格，改用文本方式解析")
+                    invite_tables = []
                 else:
                     # 使用任意表格继续尝试
                     invite_tables = any_tables
@@ -712,25 +721,12 @@ class NexusPhpHandler(_ISiteHandler):
                     if invite_reason:
                         break
             
-            # 6. 如果以上方法都没有找到具体原因，使用更宽泛的正则表达式从页面文本中提取
+            # 6. 如果以上方法都没有找到具体原因，使用共享的原因提取（含控件文案）兜底
             if not invite_reason:
-                # 部分站点把限制写在按钮/输入框的文案里（如 disabled 的 “邀請數量不足”），
-                # soup.get_text() 取不到，需要单独扫描控件属性。
-                control_texts = []
-                for control in soup.find_all(["input", "button"]):
-                    for attr in ("value", "title", "aria-label"):
-                        if control.get(attr):
-                            control_texts.append(str(control.get(attr)))
-                for control_text in control_texts:
-                    for pattern in (r".*數量不足.*", r".*数量不足.*", r".*名额不足.*", r".*没有.*邀请.*",
-                                    r".*不足.*", r".*及以上.*", r".*最低等級.*", r".*最低等级.*"):
-                        match = re.search(pattern, control_text)
-                        if match:
-                            invite_reason = match.group(0).strip()
-                            logger.debug(f"站点 {site_name} 从控件文案发现不可邀请原因: {invite_reason}")
-                            break
-                    if invite_reason:
-                        break
+                shared_reason = extract_invite_reason(str(soup))
+                if shared_reason:
+                    invite_reason = shared_reason
+                    logger.debug(f"站点 {site_name} 从页面文案发现不可邀请原因: {invite_reason}")
 
             if not invite_reason:
                 page_text = soup.get_text()

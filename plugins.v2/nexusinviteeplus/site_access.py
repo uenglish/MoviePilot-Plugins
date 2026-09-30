@@ -37,6 +37,17 @@ def normalize_ua(ua: Optional[str]) -> str:
     return (ua or "").strip() or DEFAULT_UA
 
 
+def has_user_id(html: str) -> bool:
+    """页面是否包含带数字 id 的用户中心链接（判断登录态最可靠的信号）。"""
+    return bool(re.search(r"userdetails\.php\?id=\d+", html or ""))
+
+
+def logout_marked(html: str) -> bool:
+    """页面是否存在退出/控制面板等已登录专属入口。"""
+    body = (html or "")[:200000]
+    return any(marker in body for marker in ("logout.php", "退出", "登出", "usercp.php"))
+
+
 def swap_www(url: str) -> Optional[str]:
     """在带 www. 与不带 www. 的主机名之间切换，用于纠正站点规范化跳转。"""
     if not url:
