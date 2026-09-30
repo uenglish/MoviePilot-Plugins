@@ -42,6 +42,18 @@ class _ISiteSigninHandler(metaclass=ABCMeta):
         pass
 
     @staticmethod
+    def clean_cookie(cookie: str) -> str:
+        """
+        规整 Cookie 字符串。
+
+        CookieCloud 等渠道同步过来的 Cookie 常带换行，直接放进请求头会触发
+        requests 的 InvalidHeader 而被静默丢弃，导致模块误报“请检查站点连通性”。
+        :param cookie: 原始 Cookie
+        :return: 去掉换行与制表符后的 Cookie
+        """
+        return re.sub(r"[\r\n\t]+", "", cookie or "")
+
+    @staticmethod
     def get_page_source(url: str, cookie: str, ua: str, proxy: bool, render: bool,
                         token: str = None, timeout: int = None) -> str:
         """
@@ -69,9 +81,10 @@ class _ISiteSigninHandler(metaclass=ABCMeta):
                 }
             else:
                 headers = {
-                    "User-Agent": ua,
-                    "Cookie": cookie
+                    "Cookie": _ISiteSigninHandler.clean_cookie(cookie)
                 }
+                if ua:
+                    headers["User-Agent"] = ua
             res = RequestUtils(headers=headers,
                                proxies=settings.PROXY if proxy else None,
                                timeout=timeout or 20).get_res(url=url)

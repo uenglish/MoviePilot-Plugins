@@ -10,6 +10,8 @@ import struct
 
 import pytest
 
+from app.plugins.autosigninplus import AutoSignInPlus
+from app.plugins.autosigninplus.sites import _ISiteSigninHandler
 from app.plugins.autosigninplus.sites.audiences import Audiences
 from app.plugins.autosigninplus.sites.dstudio import DStudio
 from app.plugins.autosigninplus.sites.hdkyl import HDKylin
@@ -427,3 +429,40 @@ def test_nexusphp_submits_generic_attendance_form(monkeypatch, site_info):
     assert message == "今日已签到"
     assert calls[1]["method"] == "post"
     assert calls[1]["data"] == {"action": "signin", "submit": "签到"}
+
+NEWLINE_COOKIE = "c_secure_pass=abc;\nc_secure_uid=MTIz;\r\nc_secure_ssl=bm9wZQ=="
+
+
+def test_sites_helper_cleans_cookie_for_header():
+    """CookieCloud 同步的换行 Cookie 需要规整后再放进请求头。"""
+    assert _ISiteSigninHandler.clean_cookie(NEWLINE_COOKIE) == "c_secure_pass=abc;c_secure_uid=MTIz;c_secure_ssl=bm9wZQ=="
+    assert _ISiteSigninHandler.clean_cookie("a=b; c=d") == "a=b; c=d"
+    assert _ISiteSigninHandler.clean_cookie("") == ""
+    assert _ISiteSigninHandler.clean_cookie(None) == ""
+
+
+def test_get_page_source_uses_clean_cookie(monkeypatch):
+    """get_page_source 请求头中的 Cookie 不含换行，UA 为空时不下发。"""
+    captured = {}
+
+    class FakeRequestUtils:
+        def __init__(self, headers=None, **kwargs):
+            captured["headers"] = headers or {}
+
+        def get_res(self, url=None, **kwargs):
+            return None
+
+    monkeypatch.setattr("app.plugins.autosigninplus.sites.RequestUtils", FakeRequestUtils)
+    _ISiteSigninHandler.get_page_source(url="https://example.com/", cookie=NEWLINE_COOKIE,
+                                        ua="", proxy=0, render=0)
+    headers = captured["headers"]
+    assert "\n" not in headers["Cookie"] and "\r" not in headers["Cookie"]
+    assert "User-Agent" not in headers
+
+
+def test_plugin_normalizes_site_cookie():
+    """插件入口会规整站点 Cookie，模块与通用流程都拿到干净 Cookie。"""
+    normalized = AutoSignInPlus._normalize_site_info({"name": "站点", "cookie": NEWLINE_COOKIE})
+    assert "\n" not in normalized["cookie"] and "\r" not in normalized["cookie"]
+    clean = {"name": "站点", "cookie": "a=b; c=d"}
+    assert AutoSignInPlus._normalize_site_info(clean) is clean

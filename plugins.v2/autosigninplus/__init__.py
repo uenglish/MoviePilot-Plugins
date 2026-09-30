@@ -82,7 +82,7 @@ class AutoSignInPlus(_PluginBase):
     # 插件图标
     plugin_icon = "signin.png"
     # 插件版本
-    plugin_version = "2.9.9"
+    plugin_version = "2.9.10"
     # 插件作者
     plugin_author = "thsrite"
     # 作者主页
@@ -1701,10 +1701,26 @@ class AutoSignInPlus(_PluginBase):
                 message=f"站点【{site_name}】{message or '签到成功'}"
             )
 
+    @staticmethod
+    def _normalize_site_info(site_info: CommentedMap) -> CommentedMap:
+        """
+        规整站点信息中的 Cookie。
+
+        CookieCloud 同步的 Cookie 可能带换行，放进请求头会被 requests 判为
+        非法而静默失败，这里统一清理后再交给站点模块与通用流程使用。
+        """
+        cookie = site_info.get("cookie")
+        if not cookie or not re.search(r"[\r\n\t]", cookie):
+            return site_info
+        normalized = dict(site_info)
+        normalized["cookie"] = re.sub(r"[\r\n\t]+", "", cookie)
+        return normalized
+
     def signin_site(self, site_info: CommentedMap) -> Tuple[str, str]:
         """
         签到一个站点
         """
+        site_info = self._normalize_site_info(site_info)
         site_module = self.__build_class(site_info.get("url"))
         # 开始记时
         start_time = datetime.now()
@@ -1819,6 +1835,7 @@ class AutoSignInPlus(_PluginBase):
         """
         模拟登录一个站点
         """
+        site_info = self._normalize_site_info(site_info)
         site_module = self.__build_class(site_info.get("url"))
         # 开始记时
         start_time = datetime.now()

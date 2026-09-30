@@ -274,7 +274,8 @@ class NexusPhpAttendance:
 
         :return: (状态码, 页面源码)
         """
-        request = RequestUtils(cookies=site_info.get("cookie"),
+        cookie = re.sub(r"[\r\n\t]+", "", site_info.get("cookie") or "")
+        request = RequestUtils(cookies=cookie,
                                ua=site_info.get("ua"),
                                proxies=settings.PROXY if site_info.get("proxy") else None,
                                timeout=site_info.get("timeout") or 20)
