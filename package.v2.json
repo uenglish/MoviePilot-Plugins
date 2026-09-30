@@ -160,9 +160,9 @@
       "v3.9": "MoviePilot V2 版本站点刷流插件"
     }
   },
-  "AutoSignIn": {
-    "name": "站点自动签到",
-    "description": "自动模拟登录、签到站点。",
+  "AutoSignInPlus": {
+    "name": "站点自动签到（增强版）",
+    "description": "自动模拟登录、签到站点；已适配麒麟（雷池WAF）、思齐、Depth Studio、YemaPT，并按页面特征校验签到结果。",
     "labels": "站点",
     "version": "2.9.8",
     "icon": "signin.png",
@@ -1151,7 +1151,7 @@
     "icon": "fullscreenposterwall.png",
     "author": "ltdstudio",
     "level": 1,
-"v3": false,
+    "v3": false,
     "system_version": ">=2.12.0",
     "release": true,
     "history": {
