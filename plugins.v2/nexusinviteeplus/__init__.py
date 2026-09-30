@@ -418,7 +418,7 @@ class NexusInviteePlus(_PluginBase):
     # 插件图标
     plugin_icon = "https://raw.githubusercontent.com/uenglish/MoviePilot-Plugins/main/icons/harem.png"
     # 插件版本
-    plugin_version = "1.3.2"
+    plugin_version = "1.3.3"
     # 插件作者
     plugin_author = "madrays, serendipity"
     # 作者主页
@@ -3533,7 +3533,14 @@ class NexusInviteePlus(_PluginBase):
                 loose_candidate = None
                 error_candidate = None
                 for candidate in candidate_bases:
-                    candidate_response = session.get(candidate, timeout=(10, 30))
+                    try:
+                        candidate_response = session.get(candidate, timeout=(10, 30))
+                    except Exception as request_err:
+                        # 备用域名可能无法解析/连接，不能因此丢掉主域名的真实原因
+                        logger.warning(f"站点 {site_name} 访问 {candidate} 失败: {str(request_err)[:80]}")
+                        error_candidate = error_candidate or (
+                            None, f"无法访问站点: {str(request_err)[:120]}")
+                        continue
                     candidate_reason = classify_site_response(candidate_response)
                     if candidate_reason is None and site_access_has_user_id(candidate_response.text):
                         test_response = candidate_response
@@ -3545,8 +3552,9 @@ class NexusInviteePlus(_PluginBase):
                         break
                     if candidate_reason is None:
                         loose_candidate = loose_candidate or candidate_response
-                    else:
-                        error_candidate = error_candidate or (candidate_response, candidate_reason)
+                    elif error_candidate is None or error_candidate[0] is None:
+                        # 有响应的错误原因优先于“连接异常”兜底
+                        error_candidate = (candidate_response, candidate_reason)
                 if test_response is None:
                     if loose_candidate is not None:
                         test_response = loose_candidate
