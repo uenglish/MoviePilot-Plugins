@@ -82,7 +82,7 @@ class AutoSignInPlus(_PluginBase):
     # 插件图标
     plugin_icon = "signin.png"
     # 插件版本
-    plugin_version = "2.9.13"
+    plugin_version = "2.9.14"
     # 插件作者
     plugin_author = "thsrite, serendipity"
     # 作者主页
@@ -193,9 +193,20 @@ class AutoSignInPlus(_PluginBase):
             legacy_data = self.get_data(plugin_id=self._legacy_plugin_id)
             if not legacy_data:
                 return
-            for key, value in legacy_data.items():
+            # 无 key 查询返回的是数据对象列表，兼容字典形态的返回
+            if isinstance(legacy_data, dict):
+                items = list(legacy_data.items())
+            else:
+                items = [(getattr(item, "key", None), getattr(item, "value", None))
+                         for item in legacy_data]
+            migrated = 0
+            for key, value in items:
+                if not key:
+                    continue
                 self.save_data(key=key, value=value)
-            logger.info(f"已从旧插件 {self._legacy_plugin_id} 迁移 {len(legacy_data)} 条历史记录")
+                migrated += 1
+            if migrated:
+                logger.info(f"已从旧插件 {self._legacy_plugin_id} 迁移 {migrated} 条历史记录")
         except Exception as err:
             logger.error(f"迁移旧插件历史记录失败：{str(err)}")
 

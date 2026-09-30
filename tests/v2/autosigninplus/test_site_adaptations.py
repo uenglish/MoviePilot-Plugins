@@ -577,3 +577,48 @@ def test_status_meta_levels(status, level, icon):
     meta = AutoSignInPlus._status_meta(status)
     assert meta["level"] == level
     assert meta["icon"] == icon
+
+def test_legacy_history_migration():
+    """插件改名后能从旧插件继承历史记录（无 key 查询返回的是数据对象列表）。"""
+    class FakeRecord:
+        def __init__(self, key, value):
+            self.key = key
+            self.value = value
+
+    class FakePlugin(AutoSignInPlus):
+        def __init__(self):
+            self.saved = {}
+
+        def get_data(self, key=None, plugin_id=None):
+            if plugin_id == self._legacy_plugin_id:
+                return [FakeRecord("9月30日", [{"site": "测试站", "status": "签到成功"}]),
+                        FakeRecord("签到-2026-09-30", {"do": [1], "retry": []})]
+            return []
+
+        def save_data(self, key, value, plugin_id=None):
+            self.saved[key] = value
+
+    plugin = FakePlugin()
+    plugin._AutoSignInPlus__migrate_legacy_data()
+
+    assert set(plugin.saved) == {"9月30日", "签到-2026-09-30"}
+    assert plugin.saved["签到-2026-09-30"] == {"do": [1], "retry": []}
+
+
+def test_legacy_migration_skips_when_data_exists():
+    """当前插件已有历史时不再重复迁移。"""
+    class FakePlugin(AutoSignInPlus):
+        def __init__(self):
+            self.saved = {}
+
+        def get_data(self, key=None, plugin_id=None):
+            if plugin_id:
+                raise AssertionError("已有数据时不应读取旧插件")
+            return [object()]
+
+        def save_data(self, key, value, plugin_id=None):
+            self.saved[key] = value
+
+    plugin = FakePlugin()
+    plugin._AutoSignInPlus__migrate_legacy_data()
+    assert plugin.saved == {}
