@@ -40,7 +40,14 @@ class YemaHandler(_ISiteHandler):
         # 新平台接口只在 www 主机上可用（裸域名会返回前端页面）
         alt_base = swap_www(base_url)
         try:
+            # 站点支持 180 天有效期的 API Auth Key，优先带上（无效时仍可回退 Cookie）
+            api_key = str(site_info.get("apikey") or "").strip()
+            if api_key:
+                session.headers.update({"api-auth-key": api_key})
             response = get(session, base_url, self._profile_api)
+            if api_key and not (response.text or "").strip().startswith("{"):
+                session.headers.pop("api-auth-key", None)
+                response = get(session, base_url, self._profile_api)
             if not (response.text or "").strip().startswith("{"):
                 if alt_base:
                     logger.debug(f"站点 {site_name} 裸域名未返回接口数据，改用 {alt_base}")

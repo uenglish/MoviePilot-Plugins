@@ -31,6 +31,7 @@ def _load(name):
 
 
 categories = _load("categories")
+ui_extra = _load("ui_extra")
 parsing = _load("parsing")
 trend = _load("trend")
 site_access = _load("site_access")
@@ -143,3 +144,10 @@ def test_build_snapshot_shape():
 def test_extract_invite_reason(html, expected):
     """各站点「不可邀请」文案（含繁体与控件文案）都能提取出具体原因。"""
     assert parsing.extract_invite_reason(html) == expected
+
+
+def test_priority_sorter_uses_site_order():
+    """站点明细按 MoviePilot 站点优先级（列表顺序）排序，未登记的排最后。"""
+    sorter = ui_extra._priority_sorter({"B站": 0, "A站": 1})
+    items = [{"name": "Z站"}, {"name": "A站"}, {"name": "B站"}]
+    assert [item["name"] for item in sorted(items, key=sorter)] == ["B站", "A站", "Z站"]

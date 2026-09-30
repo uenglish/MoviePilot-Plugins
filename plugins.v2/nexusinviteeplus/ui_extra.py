@@ -108,11 +108,19 @@ def build_status_overview(sites: Dict[str, dict], last_update: str) -> dict:
     }
 
 
-def build_invitable_card(sites: Dict[str, dict]) -> Optional[dict]:
+def _priority_sorter(priorities: Optional[Dict[str, int]]):
+    """按站点优先级（站点列表顺序，数值越小越靠前）排序；未登记的排在最后。"""
+    priorities = priorities or {}
+    return lambda item: (priorities.get(item["name"], len(priorities) + 1000), item["name"])
+
+
+def build_invitable_card(sites: Dict[str, dict],
+                         priorities: Optional[Dict[str, int]] = None) -> Optional[dict]:
     """可邀请聚合：集中展示有名额的站点，方便马上发邀请。"""
     items = site_categories.summarize(sites)["invitable_sites"]
     if not items:
         return None
+    items.sort(key=_priority_sorter(priorities))
     rows = []
     for item in items:
         total_invite = item["permanent_count"] + item["temporary_count"]
@@ -155,11 +163,13 @@ def build_invitable_card(sites: Dict[str, dict]) -> Optional[dict]:
     }
 
 
-def build_problem_card(sites: Dict[str, dict]) -> Optional[dict]:
+def build_problem_card(sites: Dict[str, dict],
+                       priorities: Optional[Dict[str, int]] = None) -> Optional[dict]:
     """需处理清单：按类别与建议列出异常站点。"""
     problems = site_categories.summarize(sites)["action_sites"]
     if not problems:
         return None
+    problems.sort(key=_priority_sorter(priorities))
     rows = [{
         "component": "tr",
         "content": [
@@ -232,7 +242,8 @@ def build_trend_card(diff: Optional[dict], history: List[dict]) -> dict:
     }
 
 
-def build_grouped_table(sites: Dict[str, dict], keyword: str = "") -> dict:
+def build_grouped_table(sites: Dict[str, dict], keyword: str = "",
+                        priorities: Optional[Dict[str, int]] = None) -> dict:
     """按类别分组的站点明细（服务端分组=前端筛选），支持站点名关键词过滤。"""
     grouped: Dict[str, List[dict]] = {}
     keyword = (keyword or "").strip()
@@ -247,7 +258,8 @@ def build_grouped_table(sites: Dict[str, dict], keyword: str = "") -> dict:
         items = grouped.get(key)
         if not items:
             continue
-        items.sort(key=lambda item: (-(item["permanent_count"] + item["temporary_count"]), item["name"]))
+        # 组内按站点优先级排序（与 MoviePilot 站点列表顺序一致）
+        items.sort(key=_priority_sorter(priorities))
         rows = [{
             "component": "tr",
             "content": [

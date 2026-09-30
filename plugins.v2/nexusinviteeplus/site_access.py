@@ -127,6 +127,8 @@ def detect_schema(html: str, site_url: str) -> Optional[str]:
         return "ttg"
     if "yemapt" in host:
         return "yema"
+    if "rousi.pro" in host:
+        return "rousipro"
     if "unit3d" in body or ("livewire" in body and "/users/" in body):
         return "unit3d"
     if "gazelle" in body or ("user.php?action=" in body and "torrents.php" in body):

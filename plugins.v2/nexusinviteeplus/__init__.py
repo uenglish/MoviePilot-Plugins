@@ -32,6 +32,7 @@ from .module_loader import ModuleLoader
 from .parsing import sanitize_invitees
 from .site_access import (
     COOKIE_EXPIRED_REASON,
+    CF_CHALLENGE_REASON as site_access_cf_reason,
     has_user_id as site_access_has_user_id,
     classify as classify_site_response,
     detect_schema,
@@ -42,6 +43,7 @@ from .site_access import (
 from . import categories as site_categories
 from . import trend as site_trend
 from . import ui_extra
+from .browser import is_challenge, pass_challenge
 
 # MoviePilot V2/V3 的插件完整模块名不同，动态重载必须使用运行时包名。
 _PLUGIN_PACKAGE = __package__ or __name__.rsplit('.', 1)[0]
@@ -418,7 +420,7 @@ class NexusInviteePlus(_PluginBase):
     # 插件图标
     plugin_icon = "https://raw.githubusercontent.com/uenglish/MoviePilot-Plugins/main/icons/harem.png"
     # 插件版本
-    plugin_version = "1.3.4"
+    plugin_version = "1.4.0"
     # 插件作者
     plugin_author = "madrays, serendipity"
     # 作者主页
@@ -435,6 +437,9 @@ class NexusInviteePlus(_PluginBase):
 
     # 详情页站点名关键词过滤（服务端过滤，相当于页面搜索）
     _page_filter = ""
+
+    # 不使用浏览器仿真的站点（如站点明确禁止仿真登录）
+    _no_browser_sites: list = []
 
     # 站点选择中的「全部」标记：持久化后，后续新增站点会自动纳入，无需重新保存配置
     _ALL_SITES = "all"
@@ -464,6 +469,18 @@ class NexusInviteePlus(_PluginBase):
     _scheduler: Optional[BackgroundScheduler] = None
 
     presc : Prescription = None
+
+    def __browser_disabled(self, site_name: str) -> bool:
+        """站点是否配置为不使用浏览器仿真。"""
+        return site_name in (self._no_browser_sites or [])
+
+    def __site_priorities(self) -> dict:
+        """站点优先级映射：沿用 MoviePilot 站点列表顺序（越靠前优先级越高）。"""
+        try:
+            return {site.get("name"): idx for idx, site in enumerate(self.sites.get_indexers())}
+        except Exception as err:
+            logger.error(f"读取站点优先级失败: {str(err)}")
+            return {}
 
     def __migrate_legacy(self):
         """从旧插件（nexusinvitee）迁移配置与站点数据，避免改名后历史丢失。"""
@@ -538,6 +555,12 @@ class NexusInviteePlus(_PluginBase):
             
             # 详情页关键词过滤
             self._page_filter = (config.get("page_filter") or "").strip()
+
+            # 不使用浏览器仿真的站点名单
+            raw_no_browser = config.get("no_browser_sites") or []
+            if isinstance(raw_no_browser, str):
+                raw_no_browser = [x.strip() for x in raw_no_browser.replace("，", ",").split(",")]
+            self._no_browser_sites = [str(x).strip() for x in raw_no_browser if str(x).strip()]
 
             # 处理站点ID
             raw_site_ids = config.get("site_ids") or []
@@ -644,7 +667,9 @@ class NexusInviteePlus(_PluginBase):
             "notify": self._notify,
             "cron": self._cron,
             "onlyonce": self._onlyonce,
-            "site_ids": self._nexus_sites
+            "site_ids": self._nexus_sites,
+            "page_filter": self._page_filter,
+            "no_browser_sites": self._no_browser_sites
         }
         # 使用父类的update_config方法而不是自己的方法，避免递归
         super().update_config(config)
@@ -1179,6 +1204,19 @@ class NexusInviteePlus(_PluginBase):
                                         }
                                     },
                                     {
+                                        'component': 'VSelect',
+                                        'props': {
+                                            'model': 'no_browser_sites',
+                                            'label': '不使用浏览器仿真的站点',
+                                            'items': [site.get("name") for site in self.sites.get_indexers()],
+                                            'multiple': True,
+                                            'chips': True,
+                                            'clearable': True,
+                                            'persistent-hint': True,
+                                            'hint': '这些站点遇到 Cloudflare 挑战时不启动浏览器仿真（例如站点明确禁止仿真登录）'
+                                        }
+                                    },
+                                    {
                                         'component': 'VTextField',
                                         'props': {
                                             'model': 'page_filter',
@@ -1240,7 +1278,9 @@ class NexusInviteePlus(_PluginBase):
             "notify": self._notify,
             "cron": "0 9 * * *",
             "onlyonce": False,
-            "site_ids": self._nexus_sites
+            "site_ids": self._nexus_sites,
+            "page_filter": self._page_filter,
+            "no_browser_sites": self._no_browser_sites
         }
 
     def _is_nexusphp(self, site_url: str) -> bool:
@@ -1554,20 +1594,22 @@ class NexusInviteePlus(_PluginBase):
                 elif getattr(self, "_last_diff", None):
                     diff = self._last_diff
                 summary = site_categories.summarize(enhance_data)
+                priorities = self.__site_priorities()
                 page_content.append(ui_extra.build_actions(
                     plugin_id=self.__class__.__name__,
                     apikey=settings.API_TOKEN,
                     problem_count=len(summary["action_sites"]),
                 ))
                 page_content.append(ui_extra.build_status_overview(enhance_data, last_update))
-                invitable_card = ui_extra.build_invitable_card(enhance_data)
+                invitable_card = ui_extra.build_invitable_card(enhance_data, priorities)
                 if invitable_card:
                     page_content.append(invitable_card)
-                problem_card = ui_extra.build_problem_card(enhance_data)
+                problem_card = ui_extra.build_problem_card(enhance_data, priorities)
                 if problem_card:
                     page_content.append(problem_card)
                 page_content.append(ui_extra.build_trend_card(diff, history))
-                page_content.append(ui_extra.build_grouped_table(enhance_data, self._page_filter))
+                page_content.append(ui_extra.build_grouped_table(enhance_data, self._page_filter,
+                                                                 priorities))
             except Exception as ui_err:
                 logger.error(f"生成增强版页面区块失败: {str(ui_err)}")
                 traceback.print_exc()
@@ -3573,6 +3615,19 @@ class NexusInviteePlus(_PluginBase):
                         test_response = loose_candidate
                     elif error_candidate is not None:
                         test_response, access_reason = error_candidate
+                # Cloudflare 类挑战：可用浏览器仿真过盾后重试（站点可配置排除）
+                if access_reason == site_access_cf_reason and not self.__browser_disabled(site_name):
+                    refreshed_html, refreshed_cookie = pass_challenge(site_info, site_url)
+                    if refreshed_cookie:
+                        site_cookie = refreshed_cookie
+                        session.headers.update({"Cookie": site_cookie})
+                    if refreshed_html and not is_challenge(refreshed_html):
+                        logger.info(f"站点 {site_name} 已通过浏览器仿真过盾，重试请求")
+                        test_response = session.get(site_url, timeout=(10, 30))
+                        access_reason = classify_site_response(test_response)
+                        if access_reason is None:
+                            site_info = dict(site_info)
+                            site_info["cookie"] = site_cookie
                 if access_reason:
                     logger.error(f"站点 {site_name} 访问验证失败: {access_reason}")
                     return {
@@ -4223,6 +4278,13 @@ class NexusInviteePlus(_PluginBase):
                     pass
             if self._all_sites:
                 self._nexus_sites = [self._ALL_SITES]
+
+            # 不使用浏览器仿真的站点
+            raw_no_browser = request.get("no_browser_sites") or []
+            if isinstance(raw_no_browser, str):
+                raw_no_browser = [x.strip() for x in raw_no_browser.replace("，", ",").split(",")]
+            self._no_browser_sites = [str(x).strip() for x in raw_no_browser if str(x).strip()]
+            self._page_filter = (request.get("page_filter") or "").strip()
 
             # 记录站点ID，用于调试
             logger.info(f"已选择站点ID: {self._nexus_sites}"
