@@ -1,3 +1,4 @@
+import time
 from typing import Tuple
 
 from ruamel.yaml import CommentedMap
@@ -26,6 +27,28 @@ class RousiPro(_ISiteSigninHandler):
         """
         value = str(value or "").strip()
         return value if value.lower().startswith("bearer ") else f"Bearer {value}"
+
+    @classmethod
+    def _request_with_retry(cls, method: str, url: str, headers: dict, payload: dict = None,
+                            options: dict = None, attempts: int = 3):
+        """
+        请求 PeerGo 接口，瞬时故障自动重试
+
+        站点走 Cloudflare，偶发返回 520 或直接无响应（实测首次请求可能失败），
+        这里重试几次，避免偶发抖动被当成签到失败。
+        """
+        res = None
+        for attempt in range(1, max(1, attempts) + 1):
+            request = RequestUtils(headers=headers, **(options or {}))
+            res = (request.post_res(url=url, json=payload) if method == "post"
+                   else request.get_res(url=url))
+            if res is not None and res.status_code < 500:
+                return res
+            if attempt < attempts:
+                logger.debug(f"Rousi Pro 接口第 {attempt} 次请求异常"
+                             f"（{'无响应' if res is None else res.status_code}），稍后重试")
+                time.sleep(2)
+        return res
 
     @staticmethod
     def _response_code(res) -> int:
@@ -80,12 +103,12 @@ class RousiPro(_ISiteSigninHandler):
         auth_type = "个人 API Key"
 
         if apikey:
-            res = RequestUtils(
-                headers={**base_headers, "api-token": apikey},
-                **request_options,
-            ).post_res(
+            res = self._request_with_retry(
+                method="post",
                 url="https://rousi.pro/api/points/attendance",
-                json=body
+                headers={**base_headers, "api-token": apikey},
+                payload=body,
+                options=request_options,
             )
             code = self._response_code(res)
             if res is not None and res.status_code == 200 and code == 0:
@@ -99,12 +122,12 @@ class RousiPro(_ISiteSigninHandler):
 
         if token:
             auth_type = "Authorization"
-            res = RequestUtils(
-                headers={**base_headers, "Authorization": self._bearer_auth(token)},
-                **request_options,
-            ).post_res(
+            res = self._request_with_retry(
+                method="post",
                 url="https://rousi.pro/api/points/attendance",
-                json=body
+                headers={**base_headers, "Authorization": self._bearer_auth(token)},
+                payload=body,
+                options=request_options,
             )
 
         code = self._response_code(res)
@@ -151,10 +174,12 @@ class RousiPro(_ISiteSigninHandler):
         auth_type = "个人 API Key"
 
         if apikey:
-            res = RequestUtils(
-                headers={**base_headers, "Authorization": self._bearer_auth(apikey)},
-                **request_options,
-            ).get_res(url="https://rousi.pro/api/v1/profile")
+            res = self._request_with_retry(
+                method="get",
+                url="https://rousi.pro/api/v1/profile",
+                headers={**base_headers, "api-token": apikey},
+                options=request_options,
+            )
             if res is not None and res.status_code == 200 and self._response_code(res) == 0:
                 logger.info(f"{site} 模拟登录成功")
                 return True, "模拟登录成功"
@@ -163,10 +188,12 @@ class RousiPro(_ISiteSigninHandler):
 
         if token:
             auth_type = "Authorization"
-            res = RequestUtils(
+            res = self._request_with_retry(
+                method="get",
+                url="https://rousi.pro/api/points/attendance/stats",
                 headers={**base_headers, "Authorization": self._bearer_auth(token)},
-                **request_options,
-            ).get_res(url="https://rousi.pro/api/points/attendance/stats")
+                options=request_options,
+            )
 
         if res is not None and res.status_code == 200 and self._response_code(res) == 0:
             logger.info(f"{site} 模拟登录成功")

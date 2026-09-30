@@ -787,3 +787,113 @@ def test_hddolby_requires_api_key():
     state, message = HDDolby().signin({"name": "高清杜比", "url": "https://www.hddolby.com/"})
     assert state is False
     assert "RSS Key" in message
+
+class _RousiFakeRes:
+    def __init__(self, status, payload):
+        self.status_code = status
+        self.text = json.dumps(payload)
+
+    def json(self):
+        return json.loads(self.text)
+
+
+def test_rousipro_retries_transient_failure(monkeypatch):
+    """Rousi Pro 走 Cloudflare，首次请求可能无响应：应自动重试而不是直接判失败。"""
+    from app.plugins.autosigninplus.sites import rousipro as rousi_module
+    from app.plugins.autosigninplus.sites.rousipro import RousiPro
+
+    seen = []
+
+    class FakeRequestUtils:
+        def __init__(self, headers=None, **kwargs):
+            self.headers = headers or {}
+
+        def post_res(self, url=None, json=None, **kwargs):
+            seen.append(self.headers)
+            if len(seen) == 1:
+                return None  # 首次无响应（实测会偶发出现）
+            return _RousiFakeRes(400, {"code": 1, "message": "今日已签到"})
+
+    monkeypatch.setattr(rousi_module, "RequestUtils", FakeRequestUtils)
+    monkeypatch.setattr(rousi_module.time, "sleep", lambda *_: None)
+
+    state, message = RousiPro().signin({"name": "Rousi Pro", "url": "https://rousi.pro/",
+                                        "apikey": "pgk_key", "ua": "UA"})
+
+    assert state is True
+    assert message == "今日已签到"
+    assert len(seen) == 2
+    assert seen[0]["api-token"] == "pgk_key"
+
+
+def test_rousipro_retries_cloudflare_5xx(monkeypatch):
+    """Cloudflare 520 时应重试，重试成功即视为签到成功。"""
+    from app.plugins.autosigninplus.sites import rousipro as rousi_module
+    from app.plugins.autosigninplus.sites.rousipro import RousiPro
+
+    seen = []
+
+    class FakeRequestUtils:
+        def __init__(self, headers=None, **kwargs):
+            self.headers = headers or {}
+
+        def post_res(self, url=None, json=None, **kwargs):
+            seen.append(1)
+            if len(seen) == 1:
+                return _RousiFakeRes(520, {"title": "Error 520"})
+            return _RousiFakeRes(200, {"code": 0, "message": "success"})
+
+    monkeypatch.setattr(rousi_module, "RequestUtils", FakeRequestUtils)
+    monkeypatch.setattr(rousi_module.time, "sleep", lambda *_: None)
+
+    state, message = RousiPro().signin({"name": "Rousi Pro", "url": "https://rousi.pro/",
+                                        "apikey": "pgk_key", "ua": "UA"})
+    assert state is True
+    assert message == "签到成功"
+    assert len(seen) == 2
+
+
+def test_rousipro_login_uses_api_token(monkeypatch):
+    """模拟登录也使用 PeerGo 个人 API Key（api-token 请求头）。"""
+    from app.plugins.autosigninplus.sites import rousipro as rousi_module
+    from app.plugins.autosigninplus.sites.rousipro import RousiPro
+
+    captured = {}
+
+    class FakeRequestUtils:
+        def __init__(self, headers=None, **kwargs):
+            captured["headers"] = headers or {}
+
+        def get_res(self, url=None, **kwargs):
+            captured["url"] = url
+            return _RousiFakeRes(200, {"code": 0, "message": "success"})
+
+    monkeypatch.setattr(rousi_module, "RequestUtils", FakeRequestUtils)
+
+    state, message = RousiPro().login({"name": "Rousi Pro", "url": "https://rousi.pro/",
+                                       "apikey": "pgk_key", "ua": "UA"})
+    assert state is True
+    assert message == "模拟登录成功"
+    assert captured["headers"]["api-token"] == "pgk_key"
+    assert captured["url"].endswith("/api/v1/profile")
+
+
+def test_rousipro_reports_invalid_key(monkeypatch):
+    """API Key 失效时如实报错，不再当成网络问题。"""
+    from app.plugins.autosigninplus.sites import rousipro as rousi_module
+    from app.plugins.autosigninplus.sites.rousipro import RousiPro
+
+    class FakeRequestUtils:
+        def __init__(self, **kwargs):
+            pass
+
+        def post_res(self, **kwargs):
+            return _RousiFakeRes(401, {"code": 401, "message": "unauthorized"})
+
+    monkeypatch.setattr(rousi_module, "RequestUtils", FakeRequestUtils)
+    monkeypatch.setattr(rousi_module.time, "sleep", lambda *_: None)
+
+    state, message = RousiPro().signin({"name": "Rousi Pro", "url": "https://rousi.pro/",
+                                        "apikey": "pgk_bad", "ua": "UA"})
+    assert state is False
+    assert "权限不足" in message or "失效" in message

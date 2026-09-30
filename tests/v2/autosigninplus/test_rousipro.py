@@ -69,7 +69,8 @@ def test_login_uses_api_key_profile_without_authorization_token():
         result = RousiPro().login(_site_info(token=""))
 
     assert result == (True, "模拟登录成功")
-    assert request_utils.call_args.kwargs["headers"]["Authorization"] == "Bearer stable-api-key"
+    # 个人 API Key 走 PeerGo 的 api-token 请求头（与签到保持一致，实测与 Bearer 等效）
+    assert request_utils.call_args.kwargs["headers"]["api-token"] == "stable-api-key"
     request_utils.return_value.get_res.assert_called_once_with(
         url="https://rousi.pro/api/v1/profile"
     )
