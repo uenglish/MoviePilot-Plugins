@@ -21,9 +21,15 @@ PLUGIN_DIR = _find_plugin_dir()
 
 
 def _load(name):
-    """按文件路径加载插件内的纯逻辑模块。"""
+    """把插件目录当作包加载其中的模块（支持模块内的相对导入）。"""
+    import types
+    package = "harem_plugin"
+    if package not in sys.modules:
+        pkg = types.ModuleType(package)
+        pkg.__path__ = [str(PLUGIN_DIR)]
+        sys.modules[package] = pkg
     path = PLUGIN_DIR / f"{name}.py"
-    spec = importlib.util.spec_from_file_location(f"harem_{name}", path)
+    spec = importlib.util.spec_from_file_location(f"{package}.{name}", path)
     module = importlib.util.module_from_spec(spec)
     sys.modules[spec.name] = module
     spec.loader.exec_module(module)
