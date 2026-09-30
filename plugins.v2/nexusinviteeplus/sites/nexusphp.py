@@ -779,6 +779,14 @@ class NexusPhpHandler(_ISiteHandler):
                             logger.debug(f"站点 {site_name} 发现不可用邀请原因(页面文本): {invite_reason}")
                             break
             
+            # 6.5 收敛上游正则可能匹配到的整页文本，并清理“这里返回”等残留
+            if invite_reason:
+                if len(invite_reason) > 80:
+                    shared_reason = extract_invite_reason(str(soup))
+                    invite_reason = shared_reason or invite_reason[-80:]
+                invite_reason = re.sub(r"\s*这[里裏].{0,4}返回。?", "", invite_reason).strip()
+                invite_reason = re.sub(r"\s+", " ", invite_reason)
+
             # 7. 最后检查基于通用判断规则 - 如果找不到具体原因且没有邀请表单，返回通用消息
             if not invite_reason and not can_invite:
                 invite_reason = "无法发送邀请，请手动查看原因"

@@ -418,7 +418,7 @@ class NexusInviteePlus(_PluginBase):
     # 插件图标
     plugin_icon = "https://raw.githubusercontent.com/uenglish/MoviePilot-Plugins/main/icons/harem.png"
     # 插件版本
-    plugin_version = "1.3.1"
+    plugin_version = "1.3.2"
     # 插件作者
     plugin_author = "madrays, serendipity"
     # 作者主页

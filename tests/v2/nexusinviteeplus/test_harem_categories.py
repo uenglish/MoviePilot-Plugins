@@ -75,6 +75,11 @@ def test_swap_www():
     ({"data": {"error": "站点信息不完整: Cookie"}}, "noconfig"),
     ({"data": {"error": "站点服务异常（HTTP 500）"}}, "site"),
     ({"data": {"invite_status": {"can_invite": False, "reason": "当前账户上限数已到"}}}, "limit"),
+    ({"data": {"invite_status": {"can_invite": False, "reason": "邀請數量不足"}}}, "quota"),
+    ({"data": {"invite_status": {"can_invite": False,
+                                 "reason": "Elite User(筑基) 或以上等級才可以發送邀請"}}}, "level"),
+    ({"data": {"invite_status": {"can_invite": False,
+                                 "reason": "新平台账号已校验（user），邀请信息请在「用户成长 → Invite」页面查看"}}}, "platform"),
 ])
 def test_classify_site_category(record, expected):
     """各类站点返回原因应归入对应类别，而不是一律当成失败。"""

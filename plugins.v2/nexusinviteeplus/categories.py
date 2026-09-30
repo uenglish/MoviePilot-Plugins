@@ -26,6 +26,10 @@ CATEGORY_META: Dict[str, Dict[str, Any]] = {
         "label": "已达上限", "color": "info", "icon": "mdi-account-multiple-check",
         "advice": "邀请数已达账号上限，等待被邀者确认或到期", "action": False, "weight": 3,
     },
+    "platform": {
+        "label": "新平台", "color": "info", "icon": "mdi-rocket-launch-outline",
+        "advice": "站点已迁移到新平台，邀请信息需到站点「用户成长 → Invite」查看", "action": False, "weight": 4,
+    },
     "unsupported": {
         "label": "无邀请功能", "color": "grey", "icon": "mdi-information-outline",
         "advice": "站点未提供邀请入口，可忽略", "action": False, "weight": 4,
@@ -62,12 +66,16 @@ _PATTERNS: List[Tuple[str, Tuple[str, ...]]] = [
     ("cookie", ("cookie 已失效", "cookie已失效", "cookie 失效")),
     ("noconfig", ("站点信息不完整", "未配置", "缺少 cookie")),
     ("site", ("站点服务异常", "http 500", "http 502", "http 503", "维护")),
+    ("platform", ("新平台", "已迁移到新平台")),
     ("unsupported", ("无邀请功能", "未提供邀请", "不支持邀请")),
     ("closed", ("邀请系统已关闭", "邀请已关闭", "关闭了邀请", "邀请功能已关闭")),
     ("limit", ("上限", "已达最大邀请数")),
-    ("quota", ("数量不足", "名额不足", "没有足够的邀请", "没有剩余邀请", "剩余邀请0", "剩余邀请 0")),
-    ("level", ("等级", "及以上", "权限不够", "最低等级", "才能发送邀请", "才可以发送邀请",
-               "才能邀请", "权限为", "无法邀请", "等级不足", "貴賓", "贵宾")),
+    ("quota", ("数量不足", "數量不足", "名额不足", "名額不足", "没有足够的邀请", "沒有足夠的邀請",
+               "没有剩余邀请", "沒有剩餘邀請", "剩余邀请0", "剩余邀请 0")),
+    ("level", ("等级", "等級", "及以上", "或以上", "权限不够", "權限不夠", "最低等级", "最低等級",
+               "才能发送邀请", "才能發送邀請", "才可以发送邀请", "才可以發送邀請",
+               "才能邀请", "才能邀請", "权限为", "權限為", "无法邀请", "無法邀請",
+               "等级不足", "等級不足", "貴賓", "贵宾")),
 ]
 
 
