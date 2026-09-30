@@ -420,7 +420,7 @@ class NexusInviteePlus(_PluginBase):
     # 插件图标
     plugin_icon = "https://raw.githubusercontent.com/uenglish/MoviePilot-Plugins/main/icons/harem.png"
     # 插件版本
-    plugin_version = "1.4.0"
+    plugin_version = "1.4.1"
     # 插件作者
     plugin_author = "madrays, serendipity"
     # 作者主页
@@ -3495,12 +3495,12 @@ class NexusInviteePlus(_PluginBase):
                         }
                     }
             # 对于非M-Team站点，检查Cookie
-            elif not all([site_url, site_cookie, ua]):
+            elif not site_url or not ua or (not site_cookie and not site_info.get("apikey")):
                 missing_fields = []
                 if not site_url:
                     missing_fields.append("站点URL")
                 if not site_cookie:
-                    missing_fields.append("Cookie")
+                    missing_fields.append("Cookie/API密钥")
                 if not ua:
                     missing_fields.append("User-Agent")
                     
