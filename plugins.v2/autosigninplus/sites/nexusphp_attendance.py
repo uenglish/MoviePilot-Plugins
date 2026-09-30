@@ -39,6 +39,7 @@ class NexusPhpAttendance:
         r"[签簽][到到]已得",
         r"已[经經][签簽][到到]",
         r"今日已[签簽][到到]",
+        r"今天已[签簽][到到]",
         r"[请請]不要重[复複]刷新",
         r"[请請]不要重[复複][签簽][到到]",
         r"已[连連][续續][签簽][到到]",
@@ -56,13 +57,26 @@ class NexusPhpAttendance:
         r"must be logged in",
     )
 
-    # 雷池 WAF 挑战页特征
+    # 雷池（SafeLine）WAF 挑战页特征
     _safeline_patterns = (
         r"id=[\"']slg-title[\"']",
         r"SafeLineChallenge",
         r"/\.safeline/",
         r"id=[\"']slg-box[\"']",
         r"safeline",
+    )
+
+    # Cloudflare 挑战/拦截页特征
+    _cloudflare_patterns = (
+        r"Just a moment",
+        r"cf-chl",
+        r"challenge-platform",
+        r"__cf_chl",
+        r"cdn-cgi/challenge",
+        r"cf-error-details",
+        r"Attention Required",
+        r"Verify you are human",
+        r"正在进行安全验证",
     )
 
     # 站点页面特征（用于判断 WAF 挑战已通过、页面已正常渲染）
@@ -95,6 +109,25 @@ class NexusPhpAttendance:
         if not html:
             return False
         return any(re.search(pattern, html, re.IGNORECASE) for pattern in cls._safeline_patterns)
+
+    @classmethod
+    def is_cloudflare_challenge(cls, status_code: Optional[int], html: str) -> bool:
+        """
+        判断响应是否为 Cloudflare 挑战/拦截页
+        """
+        if status_code in (403, 429, 503) and html and "cloudflare" in html.lower():
+            return True
+        if not html:
+            return False
+        return any(re.search(pattern, html, re.IGNORECASE) for pattern in cls._cloudflare_patterns)
+
+    @classmethod
+    def is_challenge(cls, status_code: Optional[int], html: str) -> bool:
+        """
+        判断响应是否为 WAF 挑战页（雷池或 Cloudflare）
+        """
+        return (cls.is_safeline_challenge(status_code, html)
+                or cls.is_cloudflare_challenge(status_code, html))
 
     @classmethod
     def is_signed(cls, html: str) -> bool:
@@ -147,19 +180,25 @@ class NexusPhpAttendance:
     @staticmethod
     def parse_form(html: str, base_url: str) -> Optional[Dict[str, str]]:
         """
-        解析签到页中需要提交的表单（开启验证码时才会出现）
+        解析签到页中需要提交的表单（验证码表单或普通签到提交表单）
 
         :param html: 页面源码
         :param base_url: 站点地址，用于补齐表单 action
         :return: 表单提交参数字典（含 __action__），页面无需提交表单时返回 None
         """
-        if not html or "imagehash" not in html:
+        if not html or "attendance" not in html.lower():
             return None
         try:
             tree = etree.HTML(html)
             if tree is None:
                 return None
+            # 优先匹配带验证码的签到表单，其次匹配签到页上的普通提交表单
             forms = tree.xpath("//form[.//input[@name='imagehash']]")
+            if not forms:
+                forms = tree.xpath(
+                    "//form[contains(@action, 'attendance')]"
+                    "[.//input[@type='submit' or @type='button' or @type='image']]"
+                )
             if not forms:
                 return None
             form = forms[0]
@@ -169,7 +208,11 @@ class NexusPhpAttendance:
                 name = input_node.get("name")
                 if not name:
                     continue
-                if (input_node.get("type") or "text").lower() in ("submit", "button", "image"):
+                input_type = (input_node.get("type") or "text").lower()
+                if input_type in ("submit", "button", "image"):
+                    # 普通签到表单可能需要提交按钮名，验证码表单则不需要
+                    if input_type == "submit" and "imagehash" not in html:
+                        data[name] = input_node.get("value") or ""
                     continue
                 data[name] = input_node.get("value") or ""
             # 站点通常会把验证码默认填入 input，个别站点通过脚本赋值
@@ -292,7 +335,7 @@ class NexusPhpAttendance:
         for attempt in range(1, attempts + 1):
             html, cookie = cls._browser_once(url=url, site_info=site_info)
             result = (html, cookie)
-            if html and not cls.is_safeline_challenge(None, html):
+            if html and not cls.is_challenge(None, html):
                 return html, cookie
             logger.warn(f"{site} 浏览器仿真第 {attempt} 次未通过 WAF 挑战")
             if attempt < attempts:
@@ -334,7 +377,7 @@ class NexusPhpAttendance:
             deadline = time.monotonic() + cls._browser_challenge_timeout
             while time.monotonic() < deadline:
                 html = page.content() or ""
-                if cls.is_safeline_challenge(None, html):
+                if cls.is_challenge(None, html):
                     stable = ""
                     time.sleep(2)
                     continue
@@ -374,19 +417,19 @@ class NexusPhpAttendance:
 
         status, html = cls.request_html(url=checkin_url, site_info=site_info)
 
-        if cls.is_safeline_challenge(status, html):
+        if cls.is_challenge(status, html):
             if not allow_browser:
-                logger.error(f"{site} 签到失败，站点被雷池 WAF 拦截")
-                return False, "签到失败，站点被雷池 WAF 拦截！"
-            logger.info(f"{site} 命中雷池 WAF 挑战，切换浏览器仿真")
+                logger.error(f"{site} 签到失败，站点被 WAF 拦截")
+                return False, "签到失败，站点被 WAF 拦截（Cloudflare/雷池）！"
+            logger.info(f"{site} 命中 WAF 挑战，切换浏览器仿真")
             html, browser_cookie = cls.browser_page_source(url=checkin_url, site_info=site_info)
             if browser_cookie:
                 # 浏览器已刷新 WAF Cookie，后续请求沿用
                 site_info = dict(site_info)
                 site_info["cookie"] = browser_cookie
-            if not html or cls.is_safeline_challenge(None, html):
-                logger.error(f"{site} 签到失败，雷池 WAF 挑战未通过")
-                return False, "签到失败，雷池 WAF 挑战未通过！"
+            if not html or cls.is_challenge(None, html):
+                logger.error(f"{site} 签到失败，WAF 挑战未通过")
+                return False, "签到失败，WAF 挑战未通过！"
 
         if not html:
             logger.error(f"{site} 签到失败，请检查站点连通性")
@@ -406,7 +449,7 @@ class NexusPhpAttendance:
             logger.error(f"{site} 签到失败，签到页面无法识别")
             return False, "签到失败，签到页面无法识别！"
 
-        if not form.get("imagestring"):
+        if "imagestring" in form and not form.get("imagestring"):
             answer = cls.solve_captcha(html, site_info)
             if not answer:
                 return False, "签到失败，需要验证码，自动识别失败！"
@@ -467,14 +510,14 @@ class NexusPhpAttendance:
             return False, ""
 
         status, html = cls.request_html(url=site_url, site_info=site_info)
-        if cls.is_safeline_challenge(status, html):
+        if cls.is_challenge(status, html):
             if not allow_browser:
-                logger.error(f"{site} 模拟登录失败，站点被雷池 WAF 拦截")
-                return False, "模拟登录失败，站点被雷池 WAF 拦截！"
+                logger.error(f"{site} 模拟登录失败，站点被 WAF 拦截")
+                return False, "模拟登录失败，站点被 WAF 拦截（Cloudflare/雷池）！"
             html, _ = cls.browser_page_source(url=site_url, site_info=site_info)
-            if not html or cls.is_safeline_challenge(None, html):
-                logger.error(f"{site} 模拟登录失败，雷池 WAF 挑战未通过")
-                return False, "模拟登录失败，雷池 WAF 挑战未通过！"
+            if not html or cls.is_challenge(None, html):
+                logger.error(f"{site} 模拟登录失败，WAF 挑战未通过")
+                return False, "模拟登录失败，WAF 挑战未通过！"
 
         if not html:
             logger.error(f"{site} 模拟登录失败，无法打开网站")

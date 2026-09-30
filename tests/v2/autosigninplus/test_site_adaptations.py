@@ -10,6 +10,7 @@ import struct
 
 import pytest
 
+from app.plugins.autosigninplus.sites.audiences import Audiences
 from app.plugins.autosigninplus.sites.dstudio import DStudio
 from app.plugins.autosigninplus.sites.hdkyl import HDKylin
 from app.plugins.autosigninplus.sites.nexusphp_attendance import NexusPhpAttendance
@@ -169,14 +170,14 @@ def test_nexusphp_reports_invalid_cookie(monkeypatch, site_info):
     assert message == "签到失败，Cookie已失效！"
 
 
-def test_safeline_challenge_requires_browser_when_disabled(monkeypatch, site_info):
-    """未允许浏览器仿真时，雷池拦截直接失败，不误报成功。"""
+def test_waf_challenge_requires_browser_when_disabled(monkeypatch, site_info):
+    """未允许浏览器仿真时，WAF 拦截直接失败，不误报成功。"""
     _stub_requests(monkeypatch, [(468, CHALLENGE_HTML)], [])
 
     state, message = NexusPhpAttendance.sign_in(site_info)
 
     assert state is False
-    assert message == "签到失败，站点被雷池 WAF 拦截！"
+    assert message == "签到失败，站点被 WAF 拦截（Cloudflare/雷池）！"
 
 
 def test_safeline_challenge_passes_with_browser(monkeypatch, site_info):
@@ -218,7 +219,7 @@ def test_safeline_challenge_not_passed(monkeypatch, site_info):
     state, message = NexusPhpAttendance.sign_in(dict(site_info), allow_browser=True)
 
     assert state is False
-    assert message == "签到失败，雷池 WAF 挑战未通过！"
+    assert message == "签到失败，WAF 挑战未通过！"
 
 
 def test_nexusphp_parse_form_reads_script_filled_captcha():
@@ -355,3 +356,74 @@ def test_yema_login_uses_profile_api(monkeypatch, site_info):
     assert state is True
     assert message == "模拟登录成功"
     assert called["api"] == "/api/user/profile"
+
+AUDIENCES_SIGNED_HTML = (
+    '<a href="logout.php">退出</a>'
+    '<div class="attendance-hero__text"><h1 class="attendance-hero__title">每日签到</h1>'
+    '<p class="attendance-hero__sub">今日已签到，明天再来吧</p></div>'
+    '<div>您今天已经签到过了，请勿重复刷新。</div>'
+)
+
+AUDIENCES_FORM_HTML = (
+    '<a href="logout.php">退出</a><h1>每日签到</h1>'
+    '<form method="post" action="attendance.php"><input type="hidden" name="action" value="signin" />'
+    '<input type="submit" name="submit" value="签到" /></form>'
+)
+
+CLOUDFLARE_CHALLENGE_HTML = (
+    '<html><head><title>Just a moment...</title></head><body>'
+    '<div id="cf-challenge-running"></div>'
+    '<script src="/cdn-cgi/challenge-platform/h/b/orchestrate/chl_page/v1"></script>'
+    '<noscript>Please enable JavaScript</noscript></body></html>'
+)
+
+
+@pytest.mark.parametrize("html, expected", [
+    (CLOUDFLARE_CHALLENGE_HTML, True),
+    (CHALLENGE_HTML, True),
+    (SIGNED_HTML, False),
+    ("", False),
+])
+def test_is_challenge_detects_waf_pages(html, expected):
+    """雷池与 Cloudflare 的挑战页都能识别，正常页面不误判。"""
+    assert NexusPhpAttendance.is_challenge(None, html) is expected
+
+
+def test_cloudflare_status_hint():
+    """Cloudflare 的 403/503 拦截页可识别。"""
+    assert NexusPhpAttendance.is_cloudflare_challenge(503, "<html>cloudflare</html>") is True
+    assert NexusPhpAttendance.is_cloudflare_challenge(200, "<html>cloudflare</html>") is False
+
+
+def test_audiences_signed_page_detected():
+    """观众签到页（现代版式）的已签到文案能被识别。"""
+    assert NexusPhpAttendance.is_signed(AUDIENCES_SIGNED_HTML) is True
+    assert NexusPhpAttendance.signed_message(AUDIENCES_SIGNED_HTML) == "今日已签到"
+
+
+def test_audiences_module_uses_browser(monkeypatch):
+    """观众模块在命中 WAF 时允许浏览器仿真。"""
+    called = {}
+
+    def fake_sign_in(site_info, allow_browser=False):
+        called["allow_browser"] = allow_browser
+        return True, "签到成功"
+
+    monkeypatch.setattr(NexusPhpAttendance, "sign_in", staticmethod(fake_sign_in))
+    assert Audiences.match("https://audiences.me/") is True
+    state, _ = Audiences().signin({"name": "观众", "url": "https://audiences.me/", "cookie": "a=b"})
+    assert state is True
+    assert called["allow_browser"] is True
+
+
+def test_nexusphp_submits_generic_attendance_form(monkeypatch, site_info):
+    """没有验证码的普通签到表单也能提交。"""
+    calls = []
+    _stub_requests(monkeypatch, [(200, AUDIENCES_FORM_HTML), (200, AUDIENCES_SIGNED_HTML)], calls)
+
+    state, message = NexusPhpAttendance.sign_in(site_info)
+
+    assert state is True
+    assert message == "今日已签到"
+    assert calls[1]["method"] == "post"
+    assert calls[1]["data"] == {"action": "signin", "submit": "签到"}
