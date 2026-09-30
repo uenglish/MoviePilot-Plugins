@@ -83,7 +83,7 @@ class AutoSignInPlus(_PluginBase):
     # 插件图标
     plugin_icon = "signin.png"
     # 插件版本
-    plugin_version = "2.9.15"
+    plugin_version = "2.9.16"
     # 插件作者
     plugin_author = "thsrite, serendipity"
     # 作者主页
@@ -1140,7 +1140,7 @@ class AutoSignInPlus(_PluginBase):
                 "label": status_text,
                 "sort": 1
             }
-        if "无签到功能" in status_text:
+        if "无签到功能" in status_text or "无签到 API" in status_text:
             return {
                 "level": "none",
                 "color": "grey",

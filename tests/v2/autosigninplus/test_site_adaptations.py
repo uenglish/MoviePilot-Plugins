@@ -683,3 +683,107 @@ def test_browser_simulation_is_serialized(monkeypatch):
 
     assert len(results) == 3
     assert max(peak) == 1, "浏览器仿真必须串行执行"
+
+def test_yema_prefers_api_auth_key():
+    """YemaPT 优先用 API Auth Key（有效期 180 天）作为鉴权，其次才是浏览器 Cookie。"""
+    from app.plugins.autosigninplus.sites.yema import YemaPT
+
+    assert YemaPT._auth_cookie({"apikey": "KEY123", "cookie": "auth=session"}) == "auth=KEY123"
+    assert YemaPT._auth_cookie({"cookie": "auth=session"}) == "auth=session"
+    assert YemaPT._auth_cookie({"apikey": "  ", "cookie": "auth=session"}) == "auth=session"
+
+
+def test_yema_uses_api_key_in_requests(monkeypatch):
+    """YemaPT 请求会带上 API Auth Key，且未配置时不走 Cookie 失效分支。"""
+    from app.plugins.autosigninplus.sites import yema as yema_module
+    from app.plugins.autosigninplus.sites.yema import YemaPT
+
+    captured = {}
+
+    class FakeRequestUtils:
+        def __init__(self, headers=None, cookies=None, **kwargs):
+            captured["cookies"] = cookies
+
+        def get_res(self, url=None, **kwargs):
+            return None
+
+        def post_res(self, url=None, **kwargs):
+            return None
+
+    monkeypatch.setattr(yema_module, "RequestUtils", FakeRequestUtils)
+    YemaPT._request(site_info={"url": "https://www.yemapt.org/", "apikey": "KEY123", "cookie": "auth=old"}, api="/x")
+    assert captured["cookies"] == "auth=KEY123"
+
+    state, message = YemaPT().signin({"name": "YemaPT", "url": "https://www.yemapt.org/", "apikey": "", "cookie": ""})
+    assert state is False
+    assert "API Auth Key" in message
+
+
+def test_hddolby_uses_api_key_without_browser(monkeypatch):
+    """高清杜比：只用 API Key 调用接口（不带浏览器 UA），绝不使用浏览器仿真。"""
+    from app.plugins.autosigninplus.sites import hddolby as hddolby_module
+    from app.plugins.autosigninplus.sites.hddolby import HDDolby
+
+    captured = {}
+
+    class FakeRes:
+        status_code = 200
+        text = json.dumps({"status": 0, "data": [{"id": "1", "username": "serendipity"}]}, ensure_ascii=False)
+
+        def json(self):
+            return json.loads(self.text)
+
+    class FakeRequestUtils:
+        def __init__(self, headers=None, **kwargs):
+            captured["headers"] = headers or {}
+            captured["cookies"] = kwargs.get("cookies")
+
+        def get_res(self, url=None, **kwargs):
+            captured["url"] = url
+            return FakeRes()
+
+    monkeypatch.setattr(hddolby_module, "RequestUtils", FakeRequestUtils)
+
+    site = {"name": "高清杜比", "url": "https://www.hddolby.com/", "apikey": "RSSKEY", "cookie": ""}
+    state, message = HDDolby().signin(site)
+
+    assert state is True
+    assert message == "站点无签到 API，API Key 校验通过"
+    assert captured["headers"]["x-api-key"] == "RSSKEY"
+    assert "User-Agent" not in captured["headers"], "站点拒绝浏览器访问，不能带浏览器 UA"
+    assert captured["url"] == "https://www.hddolby.com/api/v1/user/data"
+
+
+def test_hddolby_reports_invalid_key(monkeypatch):
+    """高清杜比 API Key 无效时如实报错。"""
+    from app.plugins.autosigninplus.sites import hddolby as hddolby_module
+    from app.plugins.autosigninplus.sites.hddolby import HDDolby
+
+    class FakeRes:
+        status_code = 200
+        text = json.dumps({"status": 10401, "error": {"message": "Invalid API Key"}})
+
+        def json(self):
+            return json.loads(self.text)
+
+    class FakeRequestUtils:
+        def __init__(self, **kwargs):
+            pass
+
+        def get_res(self, **kwargs):
+            return FakeRes()
+
+    monkeypatch.setattr(hddolby_module, "RequestUtils", FakeRequestUtils)
+
+    state, message = HDDolby().signin({"name": "高清杜比", "url": "https://www.hddolby.com/", "apikey": "BAD"})
+    assert state is False
+    assert "Invalid API Key" in message
+
+
+def test_hddolby_requires_api_key():
+    """高清杜比未配置 API Key 时给出明确提示。"""
+    from app.plugins.autosigninplus.sites.hddolby import HDDolby
+
+    state, message = HDDolby().signin({"name": "高清杜比", "url": "https://www.hddolby.com/"})
+    assert state is False
+    assert "RSS Key" in message

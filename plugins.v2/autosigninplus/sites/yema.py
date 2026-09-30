@@ -63,6 +63,19 @@ class YemaPT(_ISiteSigninHandler):
         return cls._api_host
 
     @classmethod
+    def _auth_cookie(cls, site_info: CommentedMap) -> str:
+        """
+        站点鉴权 Cookie 值
+
+        优先使用站点配置中的 API Auth Key（站点安全中心生成，有效期 180 天），
+        没有配置时才退回浏览器 Cookie（会话有效期很短，容易过期导致签到失败）。
+        """
+        api_key = str(site_info.get("apikey") or "").strip()
+        if api_key:
+            return f"auth={api_key}"
+        return str(site_info.get("cookie") or "")
+
+    @classmethod
     def _request(cls, site_info: CommentedMap, api: str, method: str = "get", data: dict = None):
         """
         请求站点接口
@@ -77,7 +90,7 @@ class YemaPT(_ISiteSigninHandler):
         }
         request = RequestUtils(headers=headers,
                                ua=site_info.get("ua"),
-                               cookies=site_info.get("cookie"),
+                               cookies=cls._auth_cookie(site_info),
                                proxies=settings.PROXY if site_info.get("proxy") else None,
                                timeout=site_info.get("timeout"),
                                referer=base_url + "/")
@@ -217,13 +230,16 @@ class YemaPT(_ISiteSigninHandler):
         :return: 签到结果信息
         """
         site = site_info.get("name")
-        if not site_info.get("cookie"):
-            logger.warn(f"未配置 {site} 的Cookie，无法签到")
-            return False, ""
+        if not self._auth_cookie(site_info):
+            logger.warn(f"未配置 {site} 的 API Auth Key 或 Cookie，无法签到")
+            return False, "签到失败：请在站点配置的 API Key 中填写 API Auth Key（站点安全中心生成，有效期 180 天）！"
 
         # 已签到则直接返回，避免重复签到
         info = self._checkin_info(site_info)
         if info is None:
+            if str(site_info.get("apikey") or "").strip():
+                logger.error(f"{site} 签到失败，无法获取签到信息，API Auth Key 可能无效或已过期")
+                return False, "签到失败，API Auth Key 无效或已过期，请在站点安全中心重新生成！"
             logger.error(f"{site} 签到失败，无法获取签到信息，Cookie可能已失效")
             return False, "签到失败，Cookie已失效！"
         if info.get("checkedInToday"):
@@ -280,5 +296,8 @@ class YemaPT(_ISiteSigninHandler):
         if result is None:
             logger.error(f"{site} 模拟登录失败，站点返回异常，状态码：{status}")
             return False, f"模拟登录失败，站点返回异常，状态码：{status}！"
+        if str(site_info.get("apikey") or "").strip():
+            logger.error(f"{site} 模拟登录失败，API Auth Key 无效或已过期")
+            return False, "模拟登录失败，API Auth Key 无效或已过期，请在站点安全中心重新生成！"
         logger.error(f"{site} 模拟登录失败，Cookie已失效")
         return False, "模拟登录失败，Cookie已失效！"
