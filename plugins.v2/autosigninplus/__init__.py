@@ -83,7 +83,7 @@ class AutoSignInPlus(_PluginBase):
     # 插件图标
     plugin_icon = "signin.png"
     # 插件版本
-    plugin_version = "2.9.18"
+    plugin_version = "2.9.19"
     # 插件作者
     plugin_author = "thsrite, serendipity"
     # 作者主页
@@ -103,6 +103,9 @@ class AutoSignInPlus(_PluginBase):
 
     # 单个站点最长执行时间（秒）：浏览器仿真等外部依赖可能永久阻塞，超时不再等待
     _site_timeout = 300
+
+    # 失败重试时间（HH:MM）：用于 U2 这类 9 点后才开放签到的站点，留空则关闭
+    _retry_time: str = "09:01"
 
     # 插件改名前的旧插件ID，用于自动迁移历史与配置
     _legacy_plugin_id = "AutoSignIn"
@@ -148,6 +151,9 @@ class AutoSignInPlus(_PluginBase):
             self._login_sites = config.get("login_sites") or []
             self._retry_keyword = config.get("retry_keyword")
             self._auto_cf = config.get("auto_cf")
+            # 未配置时使用默认重试时间（09:01），显式留空表示关闭
+            retry_time = config.get("retry_time")
+            self._retry_time = "09:01" if retry_time is None else str(retry_time).strip()
             self._clean = config.get("clean")
 
             # 过滤掉已删除的站点
@@ -180,14 +186,53 @@ class AutoSignInPlus(_PluginBase):
                 # 保存配置
                 self.__update_config()
 
-                # 启动任务
-                if self._scheduler.get_jobs():
-                    self._scheduler.print_jobs()
-                    self._scheduler.start()
+            # 失败重试任务（U2 等 9 点后开放签到的站点）
+            self.__register_retry_job()
+
+            # 启动任务
+            if self._scheduler and self._scheduler.get_jobs() and not self._scheduler.running:
+                self._scheduler.print_jobs()
+                self._scheduler.start()
 
     def get_state(self) -> bool:
         """返回插件启用状态。"""
         return self._enabled
+
+    def __register_retry_job(self):
+        """
+        注册每日失败重试任务
+
+        部分站点（如 U2）需要等到固定时间后才开放签到，定时任务可能早于该时间；
+        这里按配置的重试时间再跑一次，只会处理当日未签到/命中的站点。
+        """
+        self._scheduler = self._scheduler or BackgroundScheduler(timezone=settings.TZ)
+        try:
+            self._scheduler.remove_job("autosigninplus_retry")
+        except Exception:
+            pass
+        retry_time = str(self._retry_time or "").strip()
+        if not retry_time:
+            logger.info("未配置失败重试时间，跳过注册重试任务")
+            return
+        try:
+            hour, minute = (int(part) for part in retry_time.split(":")[:2])
+            if not (0 <= hour <= 23 and 0 <= minute <= 59):
+                raise ValueError(f"时间超出范围 {retry_time}")
+        except Exception as err:
+            logger.error(f"失败重试时间格式不正确（{retry_time}）：{str(err)}，应为 HH:MM")
+            return
+        self._scheduler.add_job(func=self.__retry, trigger="cron", hour=hour, minute=minute,
+                                id="autosigninplus_retry", replace_existing=True,
+                                name="站点自动签到失败重试")
+        logger.info(f"已注册站点自动签到失败重试任务：每天 {hour:02d}:{minute:02d}")
+
+    def __retry(self):
+        """重试当日失败或未签到的站点"""
+        logger.info("站点自动签到失败重试任务启动 ...")
+        try:
+            self.sign_in()
+        except Exception as err:
+            logger.error(f"失败重试任务异常：{str(err)}")
 
     def __run_sites(self, func, sites: list, type_str: str) -> list:
         """
@@ -271,6 +316,7 @@ class AutoSignInPlus(_PluginBase):
                 "login_sites": self._login_sites,
                 "retry_keyword": self._retry_keyword,
                 "auto_cf": self._auto_cf,
+                "retry_time": self._retry_time,
                 "clean": self._clean,
             }
         )
@@ -469,6 +515,25 @@ class AutoSignInPlus(_PluginBase):
                                         'props': {
                                             'model': 'clean',
                                             'label': '清理本日缓存',
+                                        }
+                                    }
+                                ]
+                            },
+                            {
+                                'component': 'VCol',
+                                'props': {
+                                    'cols': 12,
+                                    'md': 3
+                                },
+                                'content': [
+                                    {
+                                        'component': 'VTextField',
+                                        'props': {
+                                            'model': 'retry_time',
+                                            'label': '失败重试时间',
+                                            'placeholder': 'HH:MM，如 09:01，留空关闭',
+                                            'hint': '对当日失败/未签到站点再跑一次，用于 9 点后才开放签到的站点',
+                                            'persistent-hint': True
                                         }
                                     }
                                 ]

@@ -105,15 +105,22 @@ class YemaPT(_ISiteSigninHandler):
     @staticmethod
     def _json_result(res) -> Optional[dict]:
         """
-        解析接口返回的JSON，非JSON（如被 Cloudflare 拦截的页面）返回 None
+        解析接口返回的JSON
+
+        非JSON（如被 Cloudflare 拦截的页面）或非字典结果（如裸数字）一律返回 None，
+        避免调用方 .get 时抛异常导致签到被判失败。
         """
         if res is None or not res.text:
             return None
         try:
-            return res.json()
+            result = res.json()
         except Exception:
             logger.debug(f"YemaPT 接口返回非JSON内容：{res.text[:200]}")
             return None
+        if not isinstance(result, dict):
+            logger.debug(f"YemaPT 接口返回非预期结构：{str(result)[:200]}")
+            return None
+        return result
 
     @classmethod
     def _checkin_info(cls, site_info: CommentedMap) -> Optional[dict]:

@@ -12,17 +12,19 @@ class PTerClub(_ISiteSigninHandler):
     """
     猫签到
     """
-    # 匹配的站点Url，每一个实现类都需要设置为自己的站点Url
+    # 匹配的站点Url，站点同时存在 .com 与 .net 域名
     site_url = "pterclub.com"
+    _domains = ("pterclub.com", "pterclub.net")
 
     @classmethod
     def match(cls, url: str) -> bool:
         """
-        根据站点Url判断是否匹配当前站点签到类，大部分情况使用默认实现即可
+        根据站点Url判断是否匹配当前站点签到类
+
         :param url: 站点Url
         :return: 是否匹配，如匹配则会调用该类的signin方法
         """
-        return True if StringUtils.url_equal(url, cls.site_url) else False
+        return any(StringUtils.url_equal(url, domain) for domain in cls._domains)
 
     def signin(self, site_info: CommentedMap) -> Tuple[bool, str]:
         """
@@ -37,8 +39,12 @@ class PTerClub(_ISiteSigninHandler):
         render = site_info.get("render")
         timeout = site_info.get("timeout")
 
-        # 签到
-        html_text = self.get_page_source(url='https://pterclub.com/attendance-ajax.php',
+        # 签到（按站点配置的域名请求，.com/.net 均可）
+        base_url = str(site_info.get("url") or "").rstrip("/")
+        if not base_url:
+            logger.warn(f"未配置 {site} 的站点地址，无法签到")
+            return False, ""
+        html_text = self.get_page_source(url=f"{base_url}/attendance-ajax.php",
                                          cookie=site_cookie,
                                          ua=ua,
                                          proxy=proxy,

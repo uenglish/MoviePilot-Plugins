@@ -98,6 +98,10 @@ class NexusPhpAttendance:
     # 浏览器仿真全局互斥：Playwright 同步接口不是线程安全的，多站点并发过盾会互相阻塞
     _browser_lock = threading.Lock()
 
+    # CloakBrowser 的指纹为 Windows，遇到 Cloudflare 挑战时用与指纹一致的 UA 再试一次
+    _windows_ua = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                   "(KHTML, like Gecko) Chrome/146.0.0.0 Safari/537.36")
+
     # 浏览器等待 WAF 挑战通过的最长时间（秒）
     _browser_challenge_timeout = 120
     # 浏览器仿真的最多尝试次数
@@ -367,25 +371,34 @@ class NexusPhpAttendance:
         result = ("", "")
         # 同一时刻只允许一个站点使用浏览器仿真，避免 Playwright 同步接口被并发使用而卡死
         with cls._browser_lock:
-            for attempt in range(1, attempts + 1):
-                html, cookie = cls._browser_once(url=url, site_info=site_info)
-                result = (html, cookie)
-                if html and not cls.is_challenge(None, html):
-                    return html, cookie
-                logger.warn(f"{site} 浏览器仿真第 {attempt} 次未通过 WAF 挑战")
-                if attempt < attempts:
-                    time.sleep(3)
+            candidates = [site_info.get("ua"), cls._windows_ua]
+            for index, browser_ua in enumerate(candidates):
+                if not browser_ua or (index and browser_ua == candidates[0]):
+                    continue
+                # 换 UA 只作为 Cloudflare 指纹不一致时的兜底，试一次即可
+                tries = attempts if index == 0 else 1
+                for attempt in range(1, tries + 1):
+                    html, cookie = cls._browser_once(url=url, site_info=site_info, ua=browser_ua)
+                    result = (html, cookie)
+                    if html and not cls.is_challenge(None, html):
+                        return html, cookie
+                    logger.warn(f"{site} 浏览器仿真第 {attempt} 次未通过 WAF 挑战")
+                    if attempt < tries:
+                        time.sleep(3)
+                if index == 0:
+                    logger.info(f"{site} 改用与浏览器指纹一致的 UA 重试")
         return result
 
     @classmethod
-    def _browser_once(cls, url: str, site_info) -> Tuple[str, str]:
+    def _browser_once(cls, url: str, site_info, ua: str = None) -> Tuple[str, str]:
         """
         单次浏览器仿真：启动浏览器、写入 Cookie、打开页面并等待挑战完成
 
+        :param ua: 浏览器 UA，默认使用站点配置的 UA
         :return: (页面源码, 浏览器中刷新后的Cookie字符串)
         """
         proxies = settings.PROXY_SERVER if site_info.get("proxy") else None
-        ua = site_info.get("ua")
+        ua = ua or site_info.get("ua")
         timeout = max(30, int(site_info.get("timeout") or 60))
         try:
             from cloakbrowser import launch_context
@@ -501,8 +514,8 @@ class NexusPhpAttendance:
             if message:
                 logger.info(f"{site} 签到成功")
                 return True, message
-            logger.error(f"{site} 签到失败，人机验证未通过或签到未生效")
-            return False, "签到失败，Cloudflare Turnstile 人机验证未通过！"
+            logger.error(f"{site} 签到失败，Cloudflare Turnstile 人机验证未通过（需浏览器手动签到）")
+            return False, "签到失败，需 Cloudflare Turnstile 人机验证，自动签到无法完成（建议手动签到）！"
 
         # 需要提交验证码表单
         form = cls.parse_form(html, str(site_info.get("url")))

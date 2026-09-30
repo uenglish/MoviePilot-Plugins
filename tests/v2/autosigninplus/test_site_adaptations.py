@@ -658,7 +658,7 @@ def test_browser_simulation_is_serialized(monkeypatch):
     active = []
     peak = []
 
-    def fake_browser_once(cls, url=None, site_info=None):
+    def fake_browser_once(cls, url=None, site_info=None, ua=None):
         active.append(1)
         peak.append(len(active))
         _time.sleep(0.15)
@@ -999,3 +999,55 @@ def test_hdcity_detects_expired_cookie(monkeypatch):
     state, message = HDCity().signin({"name": "城市", "url": "https://hdcity.city/", "cookie": "a=b"})
     assert state is False
     assert "Cookie已失效" in message
+
+def test_pterclub_matches_both_domains():
+    """猫站有 .com/.net 两个域名，配置为 .net 时模块也要匹配（此前未匹配导致走通用流程误判）。"""
+    from app.plugins.autosigninplus.sites.pterclub import PTerClub
+
+    assert PTerClub.match("https://pterclub.net/")
+    assert PTerClub.match("https://pterclub.com/")
+    assert not PTerClub.match("https://example.com/")
+
+
+def test_pterclub_requests_configured_host(monkeypatch):
+    """猫站按站点配置的域名请求签到接口。"""
+    from app.plugins.autosigninplus.sites.pterclub import PTerClub
+
+    captured = {}
+
+    def fake_source(**kwargs):
+        captured.update(kwargs)
+        return '{"status":"0","data":"抱歉","message":"您今天已经签到过了，请勿重复刷新。"}'
+
+    monkeypatch.setattr(PTerClub, "get_page_source", staticmethod(fake_source))
+
+    state, message = PTerClub().signin({"name": "猫站", "url": "https://pterclub.net/", "cookie": "a=b"})
+    assert state is True
+    assert message == "今日已签到"
+    assert captured["url"] == "https://pterclub.net/attendance-ajax.php"
+
+def test_yema_handles_unexpected_response_shape(monkeypatch):
+    """YemaPT 接口返回裸数字/非字典时不应抛异常（曾出现 'int' object has no attribute 'get'）。"""
+    from app.plugins.autosigninplus.sites import yema as yema_module
+    from app.plugins.autosigninplus.sites.yema import YemaPT
+
+    class FakeRes:
+        status_code = 200
+        text = "401"
+
+        def json(self):
+            return 401
+
+    class FakeRequestUtils:
+        def __init__(self, **kwargs):
+            pass
+
+        def get_res(self, url=None, **kwargs):
+            return FakeRes()
+
+    monkeypatch.setattr(yema_module, "RequestUtils", FakeRequestUtils)
+
+    state, message = YemaPT().signin({"name": "YemaPT", "url": "https://www.yemapt.org/",
+                                      "apikey": "KEY", "cookie": ""})
+    assert state is False
+    assert "API Auth Key" in message
