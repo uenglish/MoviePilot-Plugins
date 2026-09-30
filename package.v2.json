@@ -1431,5 +1431,18 @@
       "v1.0.1": "修复 Vue 联邦构建产物未进入发布仓库",
       "v1.0": "初版"
     }
+  },
+  "NexusInviteePlus": {
+    "name": "后宫管理系统（增强版）",
+    "description": "多体系 PT 站点邀请管理：修复换行 Cookie/空 UA/用户ID 解析导致的大面积失效，按状态归类站点（等级不足、名额不足、邀请关闭、异常等），支持一键刷新、可邀请聚合、最近变化趋势与 CSV/JSON 导出。",
+    "labels": "站点",
+    "version": "1.3.0",
+    "icon": "harem.png",
+    "author": "madrays, serendipity",
+    "level": 2,
+    "release": true,
+    "history": {
+      "v1.3.0": "修复大部分站点失效：规整含换行的 Cookie、空 UA 兜底、无 id 站点可读邀请页、Cookie 误判/域名跳转自动纠正；新增状态归类统计、一键刷新按钮、可邀请聚合、需处理清单、最近变化趋势、站点名筛选与 CSV/JSON 导出；YemaPT 新平台适配"
+    }
   }
 }
