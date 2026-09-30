@@ -25,8 +25,53 @@ from app.utils.timer import TimerUtils
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
 from ruamel.yaml import CommentedMap
+from ruamel.yaml import CommentedMap
 
 
+# 通用签到页的“已签到”特征：只有出现明确特征才认为签到完成，避免站点只看登录态就误报签到成功。
+# 同时兼容简体、繁体与英文站点（NexusPHP 签到页会跟随用户语言显示文案）。
+_SIGNED_PAGE_PATTERNS = (
+    r"[签簽][到到]成功",
+    r"[签簽][到到]已得",
+    r"已[经經][签簽][到到]",
+    r"今日已[签簽][到到]",
+    r"[请請]不要重[复複]刷新",
+    r"[请請]不要重[复複][签簽][到到]",
+    r"已[连連][续續][签簽][到到]",
+    r"本次[签簽][到到][获獲]得",
+    r"此次[签簽][到到]您[获獲]得",
+    r"Already attendance",
+    r"Attendance success",
+)
+
+# 通用签到页中需要验证码的表单特征
+_CAPTCHA_PAGE_PATTERNS = (
+    r"name=[\"']imagehash[\"']",
+    r"name=[\"']imagestring[\"']",
+    r"regimage",
+)
+
+
+def _is_signed_page(html_text: str) -> bool:
+    """
+    判断通用签到页面是否已出现签到完成的明确特征
+    :param html_text: 页面源码
+    :return: 是否已签到
+    """
+    if not html_text:
+        return False
+    return any(re.search(pattern, html_text) for pattern in _SIGNED_PAGE_PATTERNS)
+
+
+def _need_captcha_page(html_text: str) -> bool:
+    """
+    判断通用签到页面是否是需要验证码的表单（此时访问页面不会完成签到）
+    :param html_text: 页面源码
+    :return: 是否需要验证码
+    """
+    if not html_text:
+        return False
+    return any(re.search(pattern, html_text, re.IGNORECASE) for pattern in _CAPTCHA_PAGE_PATTERNS)
 class AutoSignIn(_PluginBase):
     """按配置执行站点签到和模拟登录，并记录结果与发送通知。"""
 
@@ -37,7 +82,7 @@ class AutoSignIn(_PluginBase):
     # 插件图标
     plugin_icon = "signin.png"
     # 插件版本
-    plugin_version = "2.9.7"
+    plugin_version = "2.9.8"
     # 插件作者
     plugin_author = "thsrite"
     # 作者主页
@@ -1748,9 +1793,17 @@ class AutoSignIn(_PluginBase):
                             msg = f"状态码：{res.status_code}"
                         logger.warn(f"{site} 签到失败，{msg}")
                         return False, f"签到失败，{msg}！"
-                    else:
+                    elif _is_signed_page(res.text):
                         logger.info(f"{site} 签到成功")
                         return True, f"签到成功"
+                    elif _need_captcha_page(res.text):
+                        msg = "签到需要验证码，请手动签到或为该站点适配专用签到"
+                        logger.warn(f"{site} 签到失败，{msg}")
+                        return False, f"签到失败，{msg}！"
+                    else:
+                        # 只能确认登录态，无法确认签到结果，不再直接上报签到成功
+                        logger.warn(f"{site} 未能确认签到结果，仅确认模拟登录成功")
+                        return True, "模拟登录成功（未检测到签到结果）"
                 elif res is not None:
                     logger.warn(f"{site} 签到失败，状态码：{res.status_code}")
                     return False, f"签到失败，状态码：{res.status_code}！"
