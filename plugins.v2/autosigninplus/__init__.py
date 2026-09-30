@@ -82,9 +82,9 @@ class AutoSignInPlus(_PluginBase):
     # 插件图标
     plugin_icon = "signin.png"
     # 插件版本
-    plugin_version = "2.9.11"
+    plugin_version = "2.9.13"
     # 插件作者
-    plugin_author = "thsrite"
+    plugin_author = "thsrite, serendipity"
     # 作者主页
     author_url = "https://github.com/thsrite"
     # 插件配置项ID前缀
@@ -96,6 +96,12 @@ class AutoSignInPlus(_PluginBase):
 
     # 持久化全选标记，执行时展开，自动包含后续新增站点。
     _ALL_SITES = "all"
+
+    # 历史记录保留天数（详情页展示最近 7 天，这里保留 14 天便于回溯）
+    _history_days = 14
+
+    # 插件改名前的旧插件ID，用于自动迁移历史与配置
+    _legacy_plugin_id = "AutoSignIn"
 
     # 定时器
     _scheduler: Optional[BackgroundScheduler] = None
@@ -121,6 +127,11 @@ class AutoSignInPlus(_PluginBase):
 
         # 停止现有任务
         self.stop_service()
+
+        # 兼容插件改名：自动继承旧插件的历史记录与配置
+        self.__migrate_legacy_data()
+        if not config:
+            config = self.__migrate_legacy_config()
 
         # 配置
         if config:
@@ -173,6 +184,35 @@ class AutoSignInPlus(_PluginBase):
     def get_state(self) -> bool:
         """返回插件启用状态。"""
         return self._enabled
+
+    def __migrate_legacy_data(self):
+        """插件改名后自动继承旧插件的历史记录，避免详情页历史为空。"""
+        try:
+            if self.get_data() or not self._legacy_plugin_id:
+                return
+            legacy_data = self.get_data(plugin_id=self._legacy_plugin_id)
+            if not legacy_data:
+                return
+            for key, value in legacy_data.items():
+                self.save_data(key=key, value=value)
+            logger.info(f"已从旧插件 {self._legacy_plugin_id} 迁移 {len(legacy_data)} 条历史记录")
+        except Exception as err:
+            logger.error(f"迁移旧插件历史记录失败：{str(err)}")
+
+    def __migrate_legacy_config(self) -> Optional[dict]:
+        """插件改名后自动继承旧插件配置（仅当当前插件还没有配置时）。"""
+        try:
+            if not self._legacy_plugin_id:
+                return None
+            legacy_config = self.get_config(plugin_id=self._legacy_plugin_id)
+            if not legacy_config:
+                return None
+            self.update_config(legacy_config)
+            logger.info(f"已从旧插件 {self._legacy_plugin_id} 迁移插件配置")
+            return legacy_config
+        except Exception as err:
+            logger.error(f"迁移旧插件配置失败：{str(err)}")
+            return None
 
     def __update_config(self):
         """保存原始站点选择，避免全选退化为固定站点列表。"""
@@ -698,7 +738,7 @@ class AutoSignInPlus(_PluginBase):
                 'component': 'VAlert',
                 'props': {
                     'type': 'info',
-                    'text': '暂无签到数据',
+                    'text': '暂无签到记录：插件会在设定时间自动执行，也可在插件配置中开启「立即运行一次」生成记录',
                     'variant': 'tonal',
                     'class': 'mt-4',
                     'prepend-icon': 'mdi-information'
@@ -956,6 +996,7 @@ class AutoSignInPlus(_PluginBase):
                 },
                 'content': [
                     self._build_summary(signin_stats=signin_stats, login_stats=login_stats, days=len(date_list)),
+                    self._build_legend(),
                     self._build_status_section(
                         title="签到状态",
                         icon="mdi-calendar-check",
@@ -1047,6 +1088,22 @@ class AutoSignInPlus(_PluginBase):
                 "icon": "mdi-refresh",
                 "label": status_text or "需要重试",
                 "sort": 1
+            }
+        if "未检测到签到结果" in status_text:
+            return {
+                "level": "warning",
+                "color": "warning",
+                "icon": "mdi-help-circle-outline",
+                "label": status_text,
+                "sort": 1
+            }
+        if "无签到功能" in status_text:
+            return {
+                "level": "none",
+                "color": "grey",
+                "icon": "mdi-information-outline",
+                "label": status_text,
+                "sort": 2
             }
         if "成功" in status_text or "已签到" in status_text:
             return {
@@ -1169,6 +1226,40 @@ class AutoSignInPlus(_PluginBase):
                     },
                     'text': meta
                 }
+            ]
+        }
+
+    @classmethod
+    def _build_legend(cls) -> dict:
+        """构建状态图例，解释状态矩阵中圆点颜色的含义。"""
+        items = [
+            ("success", "成功 / 已签到"),
+            ("warning", "未确认签到结果（需关注）"),
+            ("error", "失败 / Cookie 失效"),
+            ("none", "未记录 / 无签到功能"),
+        ]
+        return {
+            'component': 'div',
+            'props': {
+                'class': 'd-flex flex-wrap align-center ga-3 mb-3'
+            },
+            'content': [
+                {
+                    'component': 'div',
+                    'props': {'class': 'd-flex align-center ga-1'},
+                    'content': [
+                        {
+                            'component': 'span',
+                            'props': {'class': f"autosignin-dot autosignin-dot--{level}"}
+                        },
+                        {
+                            'component': 'span',
+                            'props': {'class': 'text-caption text-medium-emphasis'},
+                            'text': label
+                        }
+                    ]
+                }
+                for level, label in items
             ]
         }
 
@@ -1493,11 +1584,13 @@ class AutoSignInPlus(_PluginBase):
         """
         签到逻辑
         """
-        yesterday = today - timedelta(days=1)
-        yesterday_str = yesterday.strftime('%Y-%m-%d')
-        # 删除昨天历史
-        self.del_data(key=type_str + "-" + yesterday_str)
-        self.del_data(key=f"{yesterday.month}月{yesterday.day}日")
+        # 清理超出保留期的历史，避免详情页只看得到当天记录
+        for offset in range(self._history_days, self._history_days + 15):
+            expired = today - timedelta(days=offset)
+            self.del_data(key=type_str + "-" + expired.strftime('%Y-%m-%d'))
+            if type_str == "签到":
+                # “月日”聚合键同时保存签到与登录结果，只清理一次
+                self.del_data(key=f"{expired.month}月{expired.day}日")
 
         # 查看今天有没有签到|登录历史
         today = today.strftime('%Y-%m-%d')

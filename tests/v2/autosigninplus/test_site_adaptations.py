@@ -486,3 +486,94 @@ def test_pttime_reports_real_failure(monkeypatch):
     state, message = PTTime().signin({"name": "PT时间", "url": "https://pttime.org/", "cookie": "a=b"})
     assert state is False
     assert message == "签到失败"
+
+def _mteam_site():
+    """馒头站点信息桩（只配置 API 密钥，站点没有 Cookie）。"""
+    return {"name": "馒头", "url": "https://kp.m-team.cc/", "ua": "Mozilla/5.0",
+            "apikey": "APIKEY", "cookie": "", "proxy": 0, "timeout": 15}
+
+
+def test_mteam_verifies_account_with_api_key(monkeypatch):
+    """馒头没有签到功能：用 API 密钥校验账号，成功即视为完成。"""
+    from app.plugins.autosigninplus.sites.mteam import MTorrent
+
+    calls = []
+
+    class FakeRes:
+        def __init__(self, payload):
+            self.text = json.dumps(payload)
+            self.status_code = 200
+
+        def json(self):
+            return json.loads(self.text)
+
+    class FakeRequestUtils:
+        def __init__(self, headers=None, **kwargs):
+            self.headers = headers or {}
+
+        def post_res(self, url=None, json=None, **kwargs):
+            calls.append({"url": url, "headers": self.headers, "json": json})
+            if url.endswith("/api/member/profile"):
+                return FakeRes({"code": "0", "message": "SUCCESS", "data": {"id": "1"}})
+            return FakeRes({"code": 401, "message": "Full authentication is required"})
+
+    monkeypatch.setattr("app.plugins.autosigninplus.sites.mteam.RequestUtils", FakeRequestUtils)
+
+    state, message = MTorrent().signin(_mteam_site())
+
+    assert state is True
+    assert message == "站点无签到功能，账号校验通过"
+    assert calls[0]["url"].endswith("/api/member/profile")
+    assert calls[0]["headers"]["x-api-key"] == "APIKEY"
+    assert "Authorization" not in calls[0]["headers"]
+
+
+def test_mteam_reports_invalid_api_key(monkeypatch):
+    """API 密钥无效时不再误报成功。"""
+    from app.plugins.autosigninplus.sites.mteam import MTorrent
+
+    class FakeRes:
+        text = json.dumps({"code": 1, "message": "key無效"})
+        status_code = 200
+
+        def json(self):
+            return json.loads(self.text)
+
+    class FakeRequestUtils:
+        def __init__(self, **kwargs):
+            pass
+
+        def post_res(self, **kwargs):
+            return FakeRes()
+
+    monkeypatch.setattr("app.plugins.autosigninplus.sites.mteam.RequestUtils", FakeRequestUtils)
+
+    state, message = MTorrent().signin(_mteam_site())
+
+    assert state is False
+    assert "key無效" in message
+
+
+def test_mteam_requires_api_key():
+    """未配置 API 密钥时给出明确提示。"""
+    from app.plugins.autosigninplus.sites.mteam import MTorrent
+
+    site = _mteam_site()
+    site.pop("apikey")
+    state, message = MTorrent().signin(site)
+    assert state is False
+    assert "API 密钥" in message
+
+@pytest.mark.parametrize("status, level, icon", [
+    ("签到成功", "success", "mdi-check-circle"),
+    ("今日已签到", "success", "mdi-check-circle"),
+    ("模拟登录成功（未检测到签到结果）", "warning", "mdi-help-circle-outline"),
+    ("站点无签到功能，账号校验通过", "none", "mdi-information-outline"),
+    ("签到失败，请检查站点连通性", "error", "mdi-alert-circle"),
+    ("签到失败，Cookie已失效！", "error", "mdi-cookie-off"),
+])
+def test_status_meta_levels(status, level, icon):
+    """详情页状态配色：新结果类型（未确认/无签到功能）不再混进成功或失败。"""
+    meta = AutoSignInPlus._status_meta(status)
+    assert meta["level"] == level
+    assert meta["icon"] == icon
