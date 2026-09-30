@@ -466,3 +466,23 @@ def test_plugin_normalizes_site_cookie():
     assert "\n" not in normalized["cookie"] and "\r" not in normalized["cookie"]
     clean = {"name": "站点", "cookie": "a=b; c=d"}
     assert AutoSignInPlus._normalize_site_info(clean) is clean
+
+def test_pttime_treats_already_signed_as_success(monkeypatch):
+    """PT时间 已签到时返回“拒绝访问：已签到，无需再签”，应视为成功而不是失败。"""
+    from app.plugins.autosigninplus.sites.pttime import PTTime
+
+    monkeypatch.setattr(PTTime, "get_page_source",
+                        staticmethod(lambda **kwargs: "拒绝访问：已签到，无需再签"))
+    state, message = PTTime().signin({"name": "PT时间", "url": "https://pttime.org/", "cookie": "a=b"})
+    assert state is True
+    assert message == "今日已签到"
+
+
+def test_pttime_reports_real_failure(monkeypatch):
+    """PT时间 返回无法识别的页面时仍上报失败。"""
+    from app.plugins.autosigninplus.sites.pttime import PTTime
+
+    monkeypatch.setattr(PTTime, "get_page_source", staticmethod(lambda **kwargs: "<html>异常页面</html>"))
+    state, message = PTTime().signin({"name": "PT时间", "url": "https://pttime.org/", "cookie": "a=b"})
+    assert state is False
+    assert message == "签到失败"

@@ -82,7 +82,7 @@ class AutoSignInPlus(_PluginBase):
     # 插件图标
     plugin_icon = "signin.png"
     # 插件版本
-    plugin_version = "2.9.10"
+    plugin_version = "2.9.11"
     # 插件作者
     plugin_author = "thsrite"
     # 作者主页
