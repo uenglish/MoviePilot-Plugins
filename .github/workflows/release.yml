@@ -1,0 +1,50 @@
+name: Release PT plugins
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: '统一发布标签'
+        required: true
+        default: 'v1.0.0'
+      consolidate_initial_history:
+        description: '首版整理：删除旧 PT 管家发布记录（只允许一个初始提交的 v1.0.0）'
+        required: true
+        type: boolean
+        default: false
+permissions:
+  contents: write
+concurrency:
+  group: pt-keepers-release
+  cancel-in-progress: false
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.tag || github.ref }}
+          fetch-depth: 0
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '22'
+      - name: Test and build both plugins
+        run: bash scripts/test.sh
+      - name: Validate and package
+        run: |
+          python3 scripts/check_release.py
+          git diff --exit-code -- plugins.v3/*/dist
+          python3 scripts/package_release.py
+      - name: Publish one release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
+          CONSOLIDATE_INITIAL: ${{ inputs.consolidate_initial_history || false }}
+        run: |
+          args=(--tag "$RELEASE_TAG")
+          if [ "$CONSOLIDATE_INITIAL" = true ]; then
+            args+=(--consolidate-initial)
+          fi
+          python3 scripts/publish_release.py "${args[@]}"

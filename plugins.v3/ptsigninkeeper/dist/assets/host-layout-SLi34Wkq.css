@@ -1,0 +1,1 @@
+.layout-content-wrapper:has(.plugin-app-page .pt-signin-page)>.layout-footer:has(>.footer-content-container:only-child:empty){display:none}

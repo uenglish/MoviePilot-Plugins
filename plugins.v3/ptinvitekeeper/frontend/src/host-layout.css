@@ -1,0 +1,4 @@
+/* 宿主空页脚仍预留 128px。仅在本插件独立页面、且页脚无内容时收起。 */
+.layout-content-wrapper:has(.plugin-app-page .pt-invite-page) > .layout-footer:has(> .footer-content-container:only-child:empty) {
+  display: none;
+}

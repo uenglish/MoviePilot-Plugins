@@ -1,0 +1,24 @@
+name: Verify PT plugins
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+permissions:
+  contents: read
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '22'
+      - name: Test and build both plugins
+        run: bash scripts/test.sh
+      - name: Validate and package
+        run: |
+          python3 scripts/check_release.py
+          python3 scripts/package_release.py
+          git diff --exit-code -- plugins.v3/*/dist
