@@ -10,6 +10,7 @@ const config = ref(makeConfig(props.initialConfig))
 const errors = ref({})
 const options = ref([])
 const quizAi = ref(null)
+const richNotificationsSupported = ref(true)
 const loading = ref(false)
 const loadError = ref('')
 const revealTokens = ref(false)
@@ -33,6 +34,7 @@ async function loadOptions() {
     const result = unpackPayload(await props.api.get(`plugin/${id.value}/ui/options`, { feedback: 'silent' }))
     options.value = Array.isArray(result.sites) ? result.sites : []
     quizAi.value = result.quiz_ai || null
+    richNotificationsSupported.value = result.rich_notifications_supported !== false
   } catch { loadError.value = '站点选项暂时无法加载；已有选择会原样保留。' }
   finally { loading.value = false }
 }
@@ -74,9 +76,10 @@ onMounted(() => { emit('layout', { maxWidth: '72rem' }); loadOptions() })
           </div>
           <div class="inline-options">
             <label><input v-model="config.onlyonce" type="checkbox"><span>保存后执行一次</span></label>
-            <label v-if="signin"><input v-model="config.rich_notify" type="checkbox"><span>富文本通知</span></label>
+            <label v-if="signin && richNotificationsSupported"><input v-model="config.rich_notify" type="checkbox"><span>富文本通知</span></label>
             <label v-if="signin"><input v-model="config.read_activity" type="checkbox"><span>读取最近动向</span></label>
           </div>
+          <p v-if="signin && !richNotificationsSupported" class="section-note">通知按摘要、异常和成功结果分段显示。</p>
           <div v-if="config.onlyonce" class="action-note">保存设置后会{{ signin ? '执行一次签到与登录任务' : '刷新所选站点的邀请数据' }}，完成后此选项自动关闭。</div>
         </div>
       </details>

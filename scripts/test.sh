@@ -12,3 +12,4 @@ docker run --rm --network none --entrypoint /bin/sh \
   -v "$root/tests/v3:/plugin-tests:ro" "$image" -c \
   'cd /app; rc=0; for p in ptsigninkeeper ptinvitekeeper; do python -B -m unittest discover -s /plugin-tests/$p -p "test_*.py" || rc=1; done; exit $rc'
 python3 "$root/scripts/check_release.py"
+bash "$root/scripts/test_v2.sh"

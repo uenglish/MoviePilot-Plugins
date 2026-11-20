@@ -7,12 +7,14 @@ import zipfile
 ROOT = Path(__file__).resolve().parents[1]
 OUT = ROOT / 'output'
 OUT.mkdir(exist_ok=True)
-index = json.loads((ROOT / 'package.v3.json').read_text())
 checksums = []
-for pid, meta in index.items():
+packages = [(platform, pid, meta) for platform in ('v3', 'v2')
+            for pid, meta in json.loads((ROOT / f'package.{platform}.json').read_text()).items()]
+for platform, pid, meta in packages:
     folder = pid.lower()
-    src = ROOT / 'plugins.v3' / folder
-    target = OUT / f'{folder}_v{meta["version"]}.zip'
+    src = ROOT / f'plugins.{platform}' / folder
+    suffix = '_mpv2' if platform == 'v2' else ''
+    target = OUT / f'{folder}{suffix}_v{meta["version"]}.zip'
     with zipfile.ZipFile(target, 'w', zipfile.ZIP_DEFLATED, compresslevel=9) as archive:
         for path in sorted(src.rglob('*')):
             rel = path.relative_to(src)

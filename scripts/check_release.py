@@ -2,6 +2,7 @@
 import ast
 import json
 from pathlib import Path
+from build_v2 import expected_files
 
 ROOT = Path(__file__).resolve().parents[1]
 IDS = ('PTSignInKeeper', 'PTInviteKeeper')
@@ -31,4 +32,15 @@ for pid in IDS:
     assert (ROOT / 'icons' / meta['icon'].rsplit('/', 1)[1]).is_file(), pid
     for p in root.rglob('*.py'):
         ast.parse(p.read_text(), filename=str(p))
-print('Two-plugin catalog, versions, authors, syntax and runtime resources verified')
+v2 = json.loads((ROOT / 'package.v2.json').read_text())
+assert set(v2) == set(IDS)
+assert {p.name for p in (ROOT / 'plugins.v2').iterdir() if p.is_dir()} == {p.lower() for p in IDS}
+for pid in IDS:
+    assert v2[pid]['version'] == index[pid]['version']
+    assert v2[pid]['author'] == 'serendipity'
+    assert v2[pid]['system_version'] == '>=2.15.6'
+    for path in (ROOT / 'plugins.v2' / pid.lower()).rglob('*.py'):
+        ast.parse(path.read_text(), filename=str(path))
+for rel, content in expected_files().items():
+    assert (ROOT / rel).read_bytes() == content, f'Stale generated file: {rel}'
+print('Two-plugin V2/V3 catalogs, versions, authors, syntax and runtime resources verified')

@@ -1,0 +1,32 @@
+{
+  "PTSignInKeeper": {
+    "name": "PT 签到管家",
+    "description": "PT 站点签到、登录检测与奖励记录，支持访问记录核验、失败重试和历史查询。",
+    "labels": "PT,站点",
+    "version": "1.1.0",
+    "icon": "https://raw.githubusercontent.com/uenglish/MoviePilot-Plugins/main/icons/pt-signin-keeper-v1.png",
+    "author": "serendipity",
+    "level": 2,
+    "release": false,
+    "system_version": ">=2.15.6",
+    "history": {
+      "v1.1.0": "新增 MoviePilot V2 2.15.6 支持，适配原生页面、配置与 AI 接口，通知使用分段文本；保留 V3 支持。",
+      "v1.0.0": "首次发布：PT 站点签到、登录核验、奖励记录、AI 辅助答题、动态 Browserless Token、原生主题页面与通知。"
+    }
+  },
+  "PTInviteKeeper": {
+    "name": "PT 邀请管家",
+    "description": "PT 邀请资格、名额和成员健康管理，支持分类筛选、历史查询和异常重试。",
+    "labels": "PT,站点",
+    "version": "1.1.0",
+    "icon": "https://raw.githubusercontent.com/uenglish/MoviePilot-Plugins/main/icons/pt-invite-keeper-v1.png",
+    "author": "serendipity",
+    "level": 2,
+    "release": false,
+    "system_version": ">=2.15.6",
+    "history": {
+      "v1.1.0": "新增 MoviePilot V2 2.15.6 支持，适配原生页面、配置及站点接口，保留邀请查询、筛选与历史功能及 V3 支持。",
+      "v1.0.0": "首次发布：PT 邀请资格、名额与成员管理、历史查询、异常重试、原生主题页面与通知。"
+    }
+  }
+}

@@ -21,6 +21,10 @@ index = json.loads((ROOT / 'package.v3.json').read_text())
 assert set(index) == {'PTSignInKeeper', 'PTInviteKeeper'}
 assert {x['version'] for x in index.values()} == {args.tag[1:]}
 assets = [ROOT / 'output' / f'{pid.lower()}_{args.tag}.zip' for pid in index]
+v2 = json.loads((ROOT / 'package.v2.json').read_text())
+assert set(v2) == set(index)
+assert {x['version'] for x in v2.values()} == {args.tag[1:]}
+assets.extend(ROOT / 'output' / f'{pid.lower()}_mpv2_{args.tag}.zip' for pid in v2)
 assets.append(ROOT / 'output' / 'SHA256SUMS')
 checksums = dict(line.split('  ', 1)[::-1] for line in assets[-1].read_text().splitlines())
 for path in assets[:-1]:

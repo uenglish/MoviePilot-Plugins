@@ -115,7 +115,7 @@ class RuntimeTests(unittest.TestCase):
         self.assertEqual(result["success"], 0)
         self.assertFalse(plugin._refresh_lock.locked())
 
-    def test_init_uses_v3_configuration_and_keeps_migration_marker(self):
+    def test_init_uses_host_configuration_and_keeps_migration_marker(self):
         with TemporaryDirectory() as root:
             plugin = object.__new__(PTInviteKeeper)
             plugin._refresh_lock = Lock()
@@ -124,7 +124,9 @@ class RuntimeTests(unittest.TestCase):
             saved = []
             plugin._plugininstance = SimpleNamespace(get_config_data=lambda key: deepcopy(configs.get(key)), save_config_data=lambda **kw: saved.append(kw))
             plugin.plugindata = SimpleNamespace(get_data=lambda plugin_id, key: None if key else [], save=lambda *args: None)
-            plugin.systemconfig = SimpleNamespace(get=lambda key: None)
+            plugin.systemconfig = SimpleNamespace(
+                get=lambda key: deepcopy(configs.get(key.removeprefix('plugin.'))),
+                set=lambda key, value: saved.append({'config_data': deepcopy(value)}))
             plugin.get_data_path = lambda plugin_id=None: Path(root) / (plugin_id or "PTInviteKeeper")
             plugin._PTInviteKeeper__reload_modules = Mock()
             with patch("app.plugins.ptinvitekeeper.SitesHelper", return_value=SimpleNamespace(get_indexers=lambda: [])), patch("app.plugins.ptinvitekeeper.SiteOper"), patch.object(ModuleLoader, "load_site_handlers", return_value=[]):

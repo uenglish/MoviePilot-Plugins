@@ -30,12 +30,13 @@ jobs:
       - uses: actions/setup-node@v6
         with:
           node-version: '22'
-      - name: Test and build both plugins
+      - name: Test both plugins on MoviePilot V2 and V3
         run: bash scripts/test.sh
       - name: Validate and package
         run: |
           python3 scripts/check_release.py
-          git diff --exit-code -- plugins.v3/*/dist
+          python3 scripts/build_v2.py --check
+          git diff --exit-code -- plugins.v3/*/dist plugins.v2
           python3 scripts/package_release.py
       - name: Publish one release
         env:

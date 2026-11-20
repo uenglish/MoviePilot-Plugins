@@ -422,7 +422,7 @@ class PTInviteKeeper(_PluginBase):
     # 插件图标
     plugin_icon = "../api/v1/plugin/file/PTInviteKeeper/assets/pt-invite-keeper-v1.webp"
     # 插件版本
-    plugin_version = "1.0.0"
+    plugin_version = "1.1.0"
     # 插件作者
     plugin_author = "serendipity"
     # 作者主页
