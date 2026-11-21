@@ -42,3 +42,12 @@ test('api helper supports final raw and envelope contracts and preserves zero va
   assert.deepEqual(unpackPayload({ success: true, message: '', data: { count: 0 } }), { count: 0 })
   assert.throws(() => unpackPayload({ success: false, message: '暂不可用', data: null }), /暂不可用/)
 })
+
+
+test('empty enabled or one-shot selection is rejected while login-only and disabled saves remain valid', () => {
+  assert.ok(validateConfig(makeConfig({ enabled: true })).sign_sites)
+  assert.ok(validateConfig(makeConfig({ onlyonce: true })).sign_sites)
+  assert.deepEqual(validateConfig(makeConfig({ enabled: true, login_sites: [2] })), {})
+  assert.deepEqual(validateConfig(makeConfig({ enabled: true, sign_sites: ['all'] })), {})
+  assert.deepEqual(validateConfig(makeConfig({ enabled: false })), {})
+})

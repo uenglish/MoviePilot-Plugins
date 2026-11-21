@@ -170,6 +170,9 @@ def _view_records(meta, sign, login):
     if _confirmed_success(sign):
         sign['bonus'] = normalize_reward(sign.get('bonus'), meta.get('url', ''), sign.get('message'))
     login = _login_record(sign, dict(login))
+    if domain == 'u2.dmhy.org' and sign.get('success') and not sign.get('signin_day'):
+        sign.update(success=False, unconfirmed=True, bonus='',
+                    message='待确认：U2 旧记录未核验签到周期，白天重新检查')
     if sign.get('signin_supported') is False:
         # ``success`` in an account-only receipt must not increase sign-in or
         # reward totals; the separate login result retains the original proof.
@@ -186,6 +189,8 @@ def _state(record, action, selected, active):
         return {'label': '无签到功能', 'color': 'info'}
     if action == '签到' and str(record.get('message') or '').startswith('待答题'):
         return {'label': '待答题', 'color': 'warning'}
+    if action == '签到' and str(record.get('message') or '').startswith(('待开放', '待确认')):
+        return {'label': '待开放' if str(record['message']).startswith('待开放') else '结果未确认', 'color': 'warning'}
     if record.get('unconfirmed'):
         return {'label': '结果未确认', 'color': 'warning'}
     if _confirmed_success(record):

@@ -104,6 +104,9 @@ export function validateConfig(config, kind = PLUGIN_KIND) {
     errors.cron = kind === 'signin' ? '填写 5 段 Cron，或小时周期，例如 2.3/9-23' : '填写 5 段 Cron，例如 0 9 * * *'
   }
   if (kind === 'signin') {
+    if ((config.enabled || config.onlyonce) && !selection(config.sign_sites).length && !selection(config.login_sites).length) {
+      errors.sign_sites = '请至少选择一个签到或登录站点，也可以选择全部站点'
+    }
     const retry = String(config.retry_time || '').trim()
     if (retry && !/^(?:[01]?\d|2[0-3]):[0-5]\d$/.test(retry)) errors.retry_time = '填写有效的 HH:MM，留空可关闭'
     const limits = { queue_cnt: [1, 20], timeout: [5, 120], quiz_ai_timeout: [10, 120], retry_count: [0, 5], retry_delay_minutes: [1, 1440], browserless_timeout: [15, 300], auto_cf: [0, 1000] }

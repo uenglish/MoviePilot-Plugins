@@ -1,5 +1,7 @@
 """Prevent guessing, duplicate submissions and false completion for quiz sites."""
 import json
+from datetime import datetime
+from zoneinfo import ZoneInfo
 import unittest
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
@@ -23,10 +25,15 @@ U2_FORM = '''<a href="logout.php">退出</a><form action="showup.php" method="ge
 <input name="_csrf" type="hidden" value="secret-csrf"><img src="/question.png">
 <input type="submit" name="answer0" value="动漫甲"><input type="submit" name="answer1" value="动漫乙">
 <input type="submit" name="answer2" value="动漫丙"><input type="submit" name="answer3" value="动漫丁"></form>'''
-U2_SIGNED = '<a href="logout.php">退出</a><p>感谢，今天已签到。</p><form><input name="date"></form>'
+U2_SIGNED = '<a href="logout.php">退出</a><p>感谢，今天已签到。</p><form><input type="date" name="date" value="2026-11-21"></form>'
 
 
 class QuizTests(unittest.TestCase):
+    def setUp(self):
+        clock = patch.object(u2, 'current_time', return_value=datetime(2026, 11, 21, 10, tzinfo=ZoneInfo('Asia/Shanghai')))
+        clock.start()
+        self.addCleanup(clock.stop)
+
     def test_discovered_u2_keeps_relative_imports_and_readback(self):
         module = next(item for item in core.load_site_modules(refresh=True)
                       if item.site_url == 'u2.dmhy.org')
@@ -215,6 +222,33 @@ class QuizTests(unittest.TestCase):
 
 
 class U2Tests(unittest.TestCase):
+    def setUp(self):
+        clock = patch.object(u2, 'current_time', return_value=datetime(2026, 11, 21, 10, tzinfo=ZoneInfo('Asia/Shanghai')))
+        clock.start()
+        self.addCleanup(clock.stop)
+
+    def test_midnight_does_not_treat_previous_cycle_as_today_or_submit(self):
+        ctx = self.ctx([U2_SIGNED])
+        with patch.object(u2, 'current_time', return_value=datetime(2026, 11, 21, 0, 1, tzinfo=ZoneInfo('Asia/Shanghai'))):
+            ok, message = u2.U2().signin({}, ctx)
+        self.assertFalse(ok)
+        self.assertTrue(message.startswith('待开放：'))
+        ctx.page.assert_not_called()
+        ctx.post.assert_not_called()
+
+    def test_daytime_rechecks_stale_or_missing_page_date(self):
+        for page in (U2_SIGNED.replace('2026-11-21', '2026-11-20'),
+                     U2_SIGNED.replace('value="2026-11-21"', '')):
+            ctx = self.ctx([page])
+            ok, message = u2.U2().signin({}, ctx)
+            self.assertFalse(ok)
+            self.assertTrue(message.startswith('待确认：'))
+            ctx.post.assert_not_called()
+
+    def test_default_page_date_does_not_use_other_users_timestamps(self):
+        self.assertEqual(u2.page_day(U2_SIGNED + '<time datetime="2026-11-20">old</time>'), '2026-11-21')
+        self.assertEqual(u2.page_day('<input type="date" name="date" value="2026-11-21">'), '')
+
     def test_reward_requires_own_account_and_today_receipt(self):
         header = '<div id="info_block"><a href="userdetails.php?id=7">本人</a>UCoin: 99999</div>'
         row = '<tr><td><a href="userdetails.php?id=7">本人</a><time title="2026-11-20 15:01:46">9分钟前</time>奖励UCoin: 28</td></tr>'

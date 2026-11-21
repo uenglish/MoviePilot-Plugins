@@ -1,132 +1,131 @@
-"""Each visited site belongs to exactly one notification result group."""
+"""Notification semantics: one round, one site, real rewards and actionable failures."""
 import unittest
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
-
-from app.plugins.ptsigninkeeper.notification import (build_notification_content, build_notification_text,
-    notification_result_changed, notification_title, send_preview)
+from app.plugins.ptsigninkeeper.notification import (
+    build_notification_content, build_notification_text, build_run_notification,
+    notification_plain_text, notification_result_changed, notification_batch,
+    queue_notification, send_preview)
 from app.plugins.ptsigninkeeper.result import SiteResult
 
 
 class NotificationTests(unittest.TestCase):
     def test_unchanged_retry_result_does_not_trigger_another_notice(self):
         previous = {'success': False, 'message': '请求失败', 'logged_in': False,
-                    'bonus': '', 'activity': '01:00', 'engine': 'http',
-                    'signin_supported': True}
-        current = {'success': False, 'message': '请求失败', 'logged_in': False,
-                   'bonus': '', 'activity': '01:10', 'engine': 'browserless',
-                   'signin_supported': True}
+                    'bonus': '', 'activity': '01:00', 'engine': 'http', 'signin_supported': True}
+        current = {**previous, 'activity': '01:10', 'engine': 'browserless'}
         self.assertFalse(notification_result_changed(previous, current))
         self.assertTrue(notification_result_changed(previous, {**current, 'logged_in': True}))
         self.assertTrue(notification_result_changed(None, current))
 
-    def test_preview_only_reads_saved_results_and_sends_one_labeled_message(self):
-        host = SimpleNamespace(get_data=Mock(return_value={'results':{'1':{'success':True,'message':'签到成功'}}}),
-                               _rich_notify=True, post_message=Mock())
-        with patch('app.plugins.ptsigninkeeper.ui._metadata', return_value={'1':{'name':'测试站'}}):
-            result = send_preview(host)
-        self.assertTrue(result['success'])
-        host.post_message.assert_called_once()
-        payload = host.post_message.call_args.kwargs
-        self.assertIn('排版预览', payload['title'])
-        self.assertIn('本次未执行签到', payload['text'])
-        self.assertEqual(payload['rich_content'].title, payload['title'])
-        host.get_data.return_value = {}
-        with patch('app.plugins.ptsigninkeeper.ui._metadata', return_value={}):
-            self.assertFalse(send_preview(host)['success'])
-        host.post_message.assert_called_once()
-
-    def test_new_identity_and_plain_results_match_rich_results(self):
-        results = [SiteResult('成功站', '签到成功，获得 0 魔力', True, True, '0 魔力'),
-                   SiteResult('保号站', '无签到功能，登录成功', False, True, signin_supported=False),
+    def test_plain_and_rich_share_structure_and_zero_reward_is_visible(self):
+        results = [SiteResult('成功站', '已签到', True, True, '0 魔力'),
+                   SiteResult('保号站', '无签到功能', False, True, signin_supported=False),
                    SiteResult('异常站', 'Cookie 已失效', False)]
-        args = ('2026-11-20', '签到', results, 3, [3], [1, 2, 3])
+        args = ('2026-11-21', '签到', results, 3, [3], [1, 2, 3])
         content = build_notification_content(*args)
         text = build_notification_text(*args)
-        self.assertEqual(content.title, notification_title('签到'))
-        self.assertEqual(content.title, 'PT 签到管家 · 签到结果')
-        self.assertIn('登录检测结果', notification_title('登录'))
-        self.assertIn('签到成功 1 · 仅登录 1 · 失败 1', text)
+        self.assertEqual(content.title, 'PT 签到管家 · 需要关注')
+        self.assertEqual(text, notification_plain_text(content))
+        self.assertIn('签到完成 1 · 仅登录 1', text)
+        self.assertIn('需处理 1 · 等待 0 · 登录有效 2', text)
+        self.assertIn('成功站 · 0 魔力', text)
+        self.assertIn('检查站点管理中的凭据', text)
         self.assertLess(text.index('异常站'), text.index('成功站'))
-        self.assertIn('已返回奖励 1 站', text)
-        self.assertEqual(text, '\n\n'.join('\n'.join(part for part in (b.title, b.text) if part)
-                                         for b in content.blocks))
-        self.assertIn('MoviePilot → PT 签到管家', text)
-
-    def test_external_receipts_are_bounded_and_sanitized(self):
-        result = SiteResult('异常站', '<b>请求异常</b><script>secret-script</script> https://x.test/?token=secret-url\ntoken=secret-key ' + '长' * 500, False)
-        args = ('2026-11-20', '签到', [result], 1, [1], [1])
-        content = build_notification_content(*args)
-        rich = '\n'.join((block.title or '') + (block.text or '') for block in content.blocks)
-        for text in (rich, build_notification_text(*args)):
-            self.assertNotIn('secret-', text)
-            self.assertNotIn('<script>', text)
-            self.assertNotIn('长' * 161, text)
-
-    def test_signin_failure_with_valid_login_is_counted_once(self):
-        results = [
-            SiteResult('验证码站', '签到失败：验证码错误', False, True),
-            SiteResult('保号站', '无签到功能，登录成功', False, True, signin_supported=False),
-            SiteResult('失效站', '登录失败：Cookie 已失效', False),
-            SiteResult('成功站', '签到成功，获得 10 魔力', True, True, '10 魔力'),
-        ]
-        content = build_notification_content('2026-11-16', '签到', results, 4, [1, 3], [1, 2, 3, 4])
-        text = '\n'.join((block.title or '') + '\n' + (block.text or '') for block in content.blocks)
-        self.assertIn('签到成功 1 · 仅登录 1 · 失败 2', text)
-        self.assertIn('签到失败 · 登录有效 · 1', text)
-        self.assertIn('无签到功能 · 登录有效 · 1', text)
-        self.assertIn('待重试 2 站', text)
+        self.assertIn('已签到回执不代表本轮新增收益', text)
         for result in results:
             self.assertEqual(text.count(result.site_name), 1)
 
-    def test_login_results_have_no_signin_failure_group(self):
-        results = [SiteResult('登录站', '登录成功', True, True),
-                   SiteResult('未登录站', '登录失败', False)]
-        content = build_notification_content('2026-11-16', '登录', results, 2, [2], [1, 2])
-        text = '\n'.join((block.title or '') + '\n' + (block.text or '') for block in content.blocks)
-        self.assertIn('登录成功 1 · 失败 1', text)
-        self.assertNotIn('签到失败 · 登录有效', text)
+    def test_waiting_u2_is_not_a_failure_or_success(self):
+        result = SiteResult('幼儿园', '待开放：北京时间 09:00 后检查', False, True)
+        content = build_notification_content('2026-11-21', '签到', [result], 1, [45], [45])
+        text = notification_plain_text(content)
+        self.assertIn('需处理 0 · 等待 1', text)
+        self.assertEqual(content.title, 'PT 签到管家 · 等待后续处理')
+        self.assertNotIn('需要处理', text)
+        self.assertIn('本轮未完成 1 站', text)
 
-    def test_many_successes_do_not_repeat_receipts_and_zero_is_a_returned_reward(self):
+    def test_signin_and_login_merge_without_double_counting(self):
+        sign = SiteResult('验证码站', '验证码错误', False, False)
+        login = SiteResult('验证码站', '登录成功', True, True)
+        content = build_run_notification('2026-11-21', [('签到', [sign], [1]), ('登录', [login], [1])], 1, 1)
+        text = notification_plain_text(content)
+        self.assertIn('本轮处理 1 / 已选 1 站', text)
+        self.assertIn('需处理 1 · 等待 0 · 登录有效 1', text)
+        self.assertIn('1 站登录有效', text)
+        self.assertEqual(text.count('验证码站'), 1)
+
+    def test_missing_entry_is_failure_with_login_evidence(self):
+        result = SiteResult('临时关闭站', '签到页面 HTTP 404', False, True)
+        text = build_notification_text('2026-11-21', '签到', [result], 1, [1], [1])
+        self.assertIn('签到入口暂不可用 · 1 站', text)
+        self.assertIn('1 站登录有效', text)
+        self.assertNotIn('无签到功能', text)
+        self.assertIn('本轮未完成 1 站', text)
+
+    def test_large_reports_are_bounded_without_repeating_raw_receipts(self):
         results = [SiteResult(f'成功站{i}', '重复回执', True, True, 0, '最近动向') for i in range(45)]
-        results.append(SiteResult('超时站', '请求超时', False))
-        text = build_notification_text('2026-11-20', '签到', results, 46, [], list(range(46)))
-        self.assertIn('签到成功 45 · 仅登录 0 · 失败 1', text)
-        self.assertIn('已返回奖励 45 站', text)
+        text = build_notification_text('2026-11-21', '签到', results, 45, [], list(range(45)))
+        self.assertIn('签到完成 45', text)
+        self.assertIn('成功站0 · 0', text)
+        self.assertIn('另有 39 站返回奖励', text)
         self.assertNotIn('重复回执', text)
         self.assertNotIn('最近动向', text)
-        self.assertNotIn('成功站44', text)
-        self.assertLess(len(text), 350)
-
-    def test_large_failure_groups_are_bounded_with_omission_counts(self):
+        self.assertLess(len(text), 600)
         results = [SiteResult(f'失败站{i}', f'业务异常{i // 20}', False) for i in range(200)]
-        text = build_notification_text('2026-11-20', '签到', results, 200, [], list(range(200)))
-        self.assertIn('失败 200', text)
+        text = build_notification_text('2026-11-21', '签到', results, 200, [], list(range(200)))
+        self.assertIn('需处理 200', text)
         self.assertIn('等 20 站', text)
-        self.assertIn('另有 4 类异常', text)
-        self.assertLess(len(text), 1400)
+        self.assertIn('另有 5 类问题', text)
+        self.assertLess(len(text), 1800)
 
-    def test_missing_entry_remains_retryable_and_is_not_permanent_no_signin(self):
-        result = SiteResult('临时关闭站', '签到页面 HTTP 404', False, True)
-        text = build_notification_text('2026-11-20', '签到', [result], 1, [1], [1])
-        self.assertIn('签到入口暂不可用 · 1 站', text)
-        self.assertIn('临时关闭站：登录已确认', text)
-        self.assertIn('后续任务会重新检查', text)
-        self.assertNotIn('无签到功能', text)
-        self.assertFalse(result.completed)
-        self.assertTrue(result.signin_supported)
-        self.assertIn('待重试 1 站', text)
+    def test_external_receipts_are_sanitized_and_unknown_reward_is_not_zero(self):
+        result = SiteResult('异常站', '<b>请求异常</b><script>secret-script</script> https://x.test/?token=secret-url\ntoken=secret-key ' + '长' * 500, False)
+        text = build_notification_text('2026-11-21', '签到', [result], 1, [1], [1])
+        self.assertNotIn('secret-', text)
+        self.assertNotIn('<script>', text)
+        self.assertNotIn('长' * 100, text)
+        text = build_notification_text('2026-11-21', '签到', [SiteResult('测试站', '已签到', True, True)], 1, [], [1])
+        self.assertIn('未返回奖励数额', text)
+        self.assertNotIn('· 0', text)
 
-    def test_preview_reuses_separate_login_evidence_without_rewriting_history(self):
-        signs = {'results': {'1': {'success':False, 'message':'签到入口 HTTP 404'}}}
-        logins = {'results': {'1': {'success':True}}}
+    def test_one_round_sends_once_and_unchanged_retry_sends_nothing(self):
+        host = SimpleNamespace(_notify=True, _rich_notify=True, _generation=1, post_message=Mock())
+        sign = SiteResult('测试站', '已签到', True, True, '3 魔力')
+        login = SiteResult('测试站', '登录成功', True, True)
+        with notification_batch(host, '2026-11-21'):
+            queue_notification(host, '2026-11-21', '签到', [sign], [1], [1], [], True)
+            queue_notification(host, '2026-11-21', '登录', [login], [1], [1], [], True)
+            host.post_message.assert_not_called()
+        host.post_message.assert_called_once()
+        payload = host.post_message.call_args.kwargs
+        self.assertIn('本轮处理 1 / 已选 1 站', payload['text'])
+        self.assertEqual(payload['text'], notification_plain_text(payload['rich_content']))
+        with notification_batch(host, '2026-11-21'):
+            queue_notification(host, '2026-11-21', '签到', [sign], [1], [1], [], False)
+        host.post_message.assert_called_once()
+
+    def test_reload_or_exception_discards_incomplete_notification(self):
+        host = SimpleNamespace(_notify=True, _rich_notify=False, _generation=1, post_message=Mock())
+        with notification_batch(host, '2026-11-21'):
+            queue_notification(host, '2026-11-21', '签到', [SiteResult('测试', '失败', False)], [1], [1], [1], True)
+            host._generation += 1
+        host.post_message.assert_not_called()
+        with self.assertRaises(RuntimeError), notification_batch(host, '2026-11-21'):
+            queue_notification(host, '2026-11-21', '签到', [SiteResult('测试', '失败', False)], [1], [1], [1], True)
+            raise RuntimeError('cancel')
+        host.post_message.assert_not_called()
+
+    def test_preview_uses_saved_results_and_separate_login_evidence(self):
+        signs = {'results': {'1': {'success': False, 'message': '签到入口 HTTP 404'}}}
+        logins = {'results': {'1': {'success': True}}}
         host = SimpleNamespace(get_data=Mock(side_effect=lambda key: signs if key.startswith('签到-') else logins),
-                               _rich_notify=False, post_message=Mock())
-        with patch('app.plugins.ptsigninkeeper.ui._metadata', return_value={'1': {'name':'本站'}}):
-            send_preview(host)
-        self.assertIn('本站：登录已确认', host.post_message.call_args.kwargs['text'])
+                               _rich_notify=True, post_message=Mock())
+        with patch('app.plugins.ptsigninkeeper.ui._metadata', return_value={'1': {'name': '本站'}}):
+            self.assertTrue(send_preview(host)['success'])
+        payload = host.post_message.call_args.kwargs
+        self.assertIn('本次未执行签到', payload['text'])
+        self.assertIn('1 站登录有效', payload['text'])
+        self.assertEqual(payload['title'], payload['rich_content'].title)
         self.assertNotIn('logged_in', signs['results']['1'])
-
-
-if __name__ == '__main__':
-    unittest.main(verbosity=2)
+        host.post_message.assert_called_once()

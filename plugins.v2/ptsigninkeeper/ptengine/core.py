@@ -2635,7 +2635,7 @@ def run_site_module(site: Mapping[str, Any], timeout: int = 30,
     ok, message = api.sign_via_module(module, site, context)
     if ok:
         return SignResult("already" if "已签到" in message else "success", message or "签到成功")
-    return SignResult("pending" if message.startswith("待答题：") else "failed", message or "签到失败")
+    return SignResult("pending" if message.startswith(("待答题：", "待开放：", "待确认：")) else "failed", message or "签到失败")
 
 
 def run_site_module_login(site: Mapping[str, Any], timeout: int = 30,

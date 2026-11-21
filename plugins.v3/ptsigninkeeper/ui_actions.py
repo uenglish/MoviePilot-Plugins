@@ -1,6 +1,7 @@
 """Nonblocking UI actions using the same plugin runner and daily deduplication."""
 from datetime import datetime
 from threading import Lock, Thread
+from .notification import notification_batch
 import time
 
 _ACTION_LOCK = Lock()
@@ -12,6 +13,8 @@ def start_run(host, kind, scope='pending', site=''):
         return {'success': False, 'message': '无效的执行范围'}
     if not host.get_state():
         return {'success': False, 'message': '请先启用插件'}
+    if kind == 'signin' and not host._sign_sites and not host._login_sites:
+        return {'success': False, 'message': '未选择签到或登录站点，请先设置站点范围'}
     from . import ui
     if kind == 'signin':
         options = {'include_inactive': False}
@@ -49,9 +52,10 @@ def start_run(host, kind, scope='pending', site=''):
                     selected = {str(row['id']) for row in rows}
                     sign = [int(sid) if sid.isdigit() else sid for sid in selected & sign_ids]
                     login = [int(sid) if sid.isdigit() else sid for sid in selected & login_ids]
-                    results = host._PTSignInKeeper__do(datetime.today(), '签到', sign) if sign else {}
-                    if generation == getattr(host, '_generation', None) and login:
-                        host._PTSignInKeeper__do(datetime.today(), '登录', login, signin_results=results)
+                    with notification_batch(host, datetime.today().strftime('%Y-%m-%d')):
+                        results = host._PTSignInKeeper__do(datetime.today(), '签到', sign) if sign else {}
+                        if generation == getattr(host, '_generation', None) and login:
+                            host._PTSignInKeeper__do(datetime.today(), '登录', login, signin_results=results)
                     if generation == getattr(host, '_generation', None):
                         host._schedule_short_retry()
                 finally:

@@ -34,6 +34,15 @@ class UIActionTests(TestCase):
         self.assertFalse(host._ui_task['running'])
         self.assertFalse(host._run_lock.locked())
 
+    def test_empty_selection_does_not_start_a_misleading_manual_task(self):
+        host = self.host()
+        host._sign_sites = host._login_sites = []
+        with patch.object(ui_actions, 'Thread') as thread:
+            result = ui_actions.start_run(host, 'signin')
+        self.assertFalse(result['success'])
+        self.assertIn('未选择签到或登录站点', result['message'])
+        thread.assert_not_called()
+
     def test_existing_runner_and_lifecycle_change_prevent_second_execution(self):
         host=self.host();host._run_lock.acquire()
         with patch('app.plugins.ptsigninkeeper.ui.list_sites', return_value={'items':[{'id':'1','category':'failed'}]}), \

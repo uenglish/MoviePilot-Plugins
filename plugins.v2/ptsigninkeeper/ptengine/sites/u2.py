@@ -17,10 +17,33 @@ from datetime import datetime
 from html import unescape
 from typing import Any, Dict, List, Mapping, Tuple
 from urllib.parse import parse_qs, urljoin, urlsplit
+from zoneinfo import ZoneInfo
 
 
 BASE = "https://u2.dmhy.org"
 SHOWUP_URL = f"{BASE}/showup.php"
+
+
+def current_time():
+    """按站点使用的北京时间判断，避免受宿主时区影响。"""
+    return datetime.now(ZoneInfo('Asia/Shanghai'))
+
+
+def page_day(page: str) -> str:
+    """默认签到页的日期选择器标识本页周期，公开列表中的他人日期不作证据。"""
+    from ..quiz import clean_tree
+    values = set(clean_tree(page).xpath('//form//input[@name="date" and @type="date"]/@value'))
+    if len(values) == 1:
+        value = next(iter(values))
+        if re.fullmatch(r'\d{4}-\d{2}-\d{2}', value):
+            return value
+    return ''
+
+
+def signed_today(page: str) -> bool:
+    """有当前周期日期和已登录的完成回执，才能计入今日签到。"""
+    now = current_time()
+    return now.hour >= 9 and page_day(page) == now.date().isoformat() and _is_signed(page)
 
 _SIGNED_LINK_RE = re.compile(
     r"<a\b(?=[^>]*\bhref\s*=\s*[\"'](?:https?://u2\.dmhy\.org)?/?showup\.php"
@@ -103,7 +126,7 @@ def _daily_reward(page: str, cookie: str = "", day: str = "") -> str:
     uid = next(iter(ids), cookie_id)
     if not uid:
         return ''
-    day = day or datetime.now().date().isoformat()
+    day = day or current_time().date().isoformat()
     rewards = set()
     for link in root.xpath('//a[@href]'):
         if user_id(link.get('href', '')) != uid:
@@ -154,13 +177,19 @@ class U2:
     authoritative = True
 
     def signin(self, site: Mapping[str, Any], ctx: Any) -> Tuple[bool, str]:
+        # U2 凌晨仍可能显示上一周期“今天已签到”，保守地在 09:00 后核验。
+        # 此前不读取或提交旧周期答题，保持未完成以便每日补跑。
+        if current_time().hour < 9:
+            return False, "待开放：U2 今日签到将在北京时间 09:00 后检查，凌晨回执不计入今日"
         page = ctx.page(SHOWUP_URL)
         if not page:
             return False, "签到失败：打不开 U2 的 showup 页面"
         if _is_login_page(page):
             return False, "签到失败：Cookie 已失效"
-        if _is_signed(page):
+        if signed_today(page):
             return True, "今日已签到" + _reward_suffix(page, site)
+        if _is_signed(page) or (page_day(page) and page_day(page) != current_time().date().isoformat()):
+            return False, "待确认：U2 页面尚未确认今日签到周期，稍后重新检查"
 
         hidden, options = _showup_fields(page)
         required = ("req", "hash", "form", "_csrf")
@@ -213,7 +242,7 @@ class U2:
         checked = ""
         for attempt in range(3):
             checked = ctx.page(SHOWUP_URL)
-            if _is_signed(checked):
+            if signed_today(checked):
                 return True, "签到成功" + _reward_suffix(checked, site) + ("；未配置可用视觉 AI，沿用随机签到" if not ai_mode else "")
             if _is_login_page(checked):
                 return False, "签到失败：Cookie 已失效"

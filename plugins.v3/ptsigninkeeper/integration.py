@@ -308,7 +308,9 @@ def row_result(row, action):
                  or (row.get('login_status') == 'login' and bool(row.get('activity'))))
     if action == '签到':
         prefix = ('无签到功能' if not signin_supported else
-                  '已签到' if status == 'already' else '签到成功' if success else '待答题' if status == 'pending' else '签到失败')
+                  '已签到' if status == 'already' else '签到成功' if success else
+                  message.split('：', 1)[0] if status == 'pending' and message.startswith(('待开放：', '待确认：')) else
+                  '待答题' if status == 'pending' else '签到失败')
     else:
         prefix = '登录成功' if success else '登录失败'
     if not message.startswith(prefix):

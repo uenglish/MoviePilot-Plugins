@@ -1,9 +1,8 @@
 import re
 from threading import Lock
-from .integration import SignInBridge, merge_config, extend_form, migrate_history
+from .integration import SignInBridge, merge_config, extend_form, migrate_history, selection_union
 from .result import SiteResult, has_signin_evidence, has_login_evidence, has_login_form
-from .notification import (build_notification_content, build_notification_text,
-                            notification_result_changed, notification_title)
+from .notification import notification_result_changed, notification_batch, queue_notification
 from .dashboard import render_dashboard
 from . import ui, ui_actions
 from .identity_migration import migrate_identity
@@ -89,7 +88,7 @@ class PTSignInKeeper(_PluginBase):
     # 插件图标
     plugin_icon = "../api/v1/plugin/file/PTSignInKeeper/assets/pt-signin-keeper-v1.webp"
     # 插件版本
-    plugin_version = "1.2.1"
+    plugin_version = "1.3.0"
     # 插件作者
     plugin_author = "serendipity"
     # 作者主页
@@ -181,8 +180,8 @@ class PTSignInKeeper(_PluginBase):
             self._onlyonce = config.get("onlyonce")
             self._notify = config.get("notify")
             self._queue_cnt = max(1, min(int(config.get("queue_cnt") or 5), 20))
-            self._sign_sites = config.get("sign_sites") or []
-            self._login_sites = config.get("login_sites") or []
+            self._sign_sites = selection_union(config.get("sign_sites"))
+            self._login_sites = selection_union(config.get("login_sites"))
             self._retry_keyword = config.get("retry_keyword")
             self._auto_cf = config.get("auto_cf")
             # 未配置时使用默认重试时间（09:01），显式留空表示关闭
@@ -203,6 +202,12 @@ class PTSignInKeeper(_PluginBase):
 
         # 加载模块
         if self._enabled or self._onlyonce:
+            if not self._sign_sites and not self._login_sites:
+                logger.warning("未选择签到或登录站点，本次不执行；请在站点范围中选择全部站点或指定站点")
+                self._onlyonce = False
+                self._allow_once = False
+                self.__update_config()
+                return
 
             self._site_schema = ModuleHelper.load('app.plugins.ptsigninkeeper.sites',
                                                   filter_func=lambda _, obj: hasattr(obj, 'match'))
@@ -222,7 +227,8 @@ class PTSignInKeeper(_PluginBase):
                 self.__update_config()
 
             # 失败重试任务（U2 等 9 点后开放签到的站点）
-            self.__register_retry_job()
+            if self._enabled:
+                self.__register_retry_job()
 
             # 启动任务
             if self._scheduler and self._scheduler.get_jobs() and not self._scheduler.running:
@@ -411,13 +417,16 @@ class PTSignInKeeper(_PluginBase):
             "kwargs": {} # 定时器参数
         }]
         """
+        self._start_time = self._end_time = None
+        if not self._sign_sites and not self._login_sites:
+            return []
         if self._enabled and self._cron:
             try:
-                if str(self._cron).strip().count(" ") == 4:
+                if len(str(self._cron).split()) == 5:
                     return [{
                         "id": "PTSignInKeeper",
                         "name": "PT 签到管家服务",
-                        "trigger": CronTrigger.from_crontab(self._cron),
+                        "trigger": CronTrigger.from_crontab(self._cron, timezone=settings.TZ),
                         "func": self.sign_in,
                         "kwargs": {}
                     }]
@@ -1717,7 +1726,8 @@ class PTSignInKeeper(_PluginBase):
             logger.info("增强版签到：上一轮仍在执行，本次跳过")
             return
         try:
-            self._run_signin(event)
+            with notification_batch(self, datetime.today().strftime('%Y-%m-%d')):
+                self._run_signin(event)
             self._schedule_short_retry()
         finally:
             self._allow_once = False
@@ -1731,6 +1741,9 @@ class PTSignInKeeper(_PluginBase):
             event_data = event.event_data
             if not event_data or event_data.get("action") != "site_signin":
                 return
+        if not self._sign_sites and not self._login_sites:
+            logger.warning("未选择签到或登录站点，本次不执行；请先设置站点范围")
+            return
         # 日期
         today = datetime.today()
         generation = self._generation
@@ -1797,7 +1810,7 @@ class PTSignInKeeper(_PluginBase):
 
             # 今日未签|登录站点
             no_sites = [site for site in do_sites if not self._action_completed(
-                results.get(str(site.get("id")), {}), type_str)]
+                results.get(str(site.get("id")), {}), type_str, site)]
 
             if not no_sites:
                 logger.info(f"今日 {today} 已{type_str}，无重新{type_str}站点，本次任务结束")
@@ -1905,6 +1918,9 @@ class PTSignInKeeper(_PluginBase):
                 current_result = {"success": s.success, "message": s.message,
                     "logged_in": s.logged_in, "bonus": s.bonus, "activity": s.activity,
                     "engine": s.engine, "signin_supported": s.signin_supported}
+                if type_str == '签到' and s.success and self._is_u2(site):
+                    from .ptengine.sites.u2 import current_time
+                    current_result['signin_day'] = current_time().date().isoformat()
                 notification_changed = (notification_changed or notification_result_changed(
                     results.get(str(site_id)), current_result))
                 results[str(site_id)] = current_result
@@ -1970,21 +1986,9 @@ class PTSignInKeeper(_PluginBase):
             # 发送通知
             notify_rows = [(site, result) for site, result in zip(do_sites, status)
                            if site.get("id") not in reused_ids]
-            notify_status = [result for _, result in notify_rows]
-            notify_retry = [site_id for site_id in retry_sites if site_id not in reused_ids]
-            if self._notify and notify_rows and notification_changed:
-                # 普通文本与结构化通知使用相同的摘要和分组，渠道渲染由宿主处理。
-                notification_args = (today, type_str, notify_status,
-                                     len(selected_site_ids) - len(reused_ids), notify_retry,
-                                     [site.get("id") for site, _ in notify_rows])
-                rich_kwargs = {}
-                if self._rich_notify:
-                    rich_kwargs["rich_content"] = build_notification_content(*notification_args)
-                self.post_message(title=notification_title(type_str),
-                                  mtype=NotificationType.SiteMessage,
-                                  text=build_notification_text(*notification_args),
-                                  **rich_kwargs
-                                  )
+            queue_notification(self, today, type_str, status,
+                               [site.get('id') for site in do_sites], selected_site_ids,
+                               retry_sites, notification_changed)
             if event and notify_rows:
                 self.post_message(channel=event.event_data.get("channel"),
                                   title=f"PT 签到管家 · {type_str}任务执行结束", userid=event.event_data.get("user"))
@@ -2343,6 +2347,7 @@ class PTSignInKeeper(_PluginBase):
         routes = [('/data', self.ui_data, 'GET'), ('/detail', self.ui_detail, 'GET'),
                   ('/options', self.ui_options, 'GET'), ('/export', self.ui_export, 'GET'),
                   ('/run', self.ui_run, 'POST'),
+                  ('/browserless-quota', self.ui_browserless_quota, 'POST'),
                   ('/notification-preview', self.ui_notification_preview, 'POST')]
 
         return [{'path': '/ui' + path, 'endpoint': endpoint, 'methods': [method],
@@ -2352,6 +2357,10 @@ class PTSignInKeeper(_PluginBase):
     def ui_notification_preview(self) -> dict:
         from .notification import send_preview
         return send_preview(self)
+
+    def ui_browserless_quota(self, payload: dict) -> dict:
+        from .browserless_quota import lookup_quota
+        return lookup_quota(payload)
 
     def ui_run(self, scope: str = 'pending', site: str = '') -> dict:
         result = ui_actions.start_run(self, 'signin', scope=scope, site=site)
@@ -2424,12 +2433,20 @@ class PTSignInKeeper(_PluginBase):
             self._scheduler.start()
 
     @staticmethod
-    def _action_completed(result, action):
+    def _action_completed(result, action, site=None):
         """A failed check-in is retryable even when the session is authenticated."""
+        if action == '签到' and PTSignInKeeper._is_u2(site or {}) and result.get('success'):
+            from .ptengine.sites.u2 import current_time
+            return result.get('signin_day') == current_time().date().isoformat()
         if result.get("success"):
             return True
         return bool(result.get("logged_in") and (
             action == "登录" or result.get("signin_supported") is False))
+
+    @staticmethod
+    def _is_u2(site):
+        from .ptengine.core import normalize_host
+        return normalize_host(str(site.get('url') or site.get('domain') or '')) == 'u2.dmhy.org'
 
 
     def signin_site(self, site_info: CommentedMap) -> SiteResult:
