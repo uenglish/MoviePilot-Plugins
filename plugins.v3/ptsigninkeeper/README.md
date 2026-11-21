@@ -1,6 +1,6 @@
 # PT 签到管家
 
-作者及维护者：serendipity。版本：1.1.0。适用于 MoviePilot V3（>=3.2.6）。
+作者及维护者：serendipity。版本：1.2.1。适用于 MoviePilot V2（>=2.15.6）和 V3（>=3.2.6）。
 
 PT 站点签到、登录检测、奖励记录与访问记录核验。插件 ID 为 `PTSignInKeeper`，包名为 `ptsigninkeeper`，配置和数据使用独立命名空间。
 
