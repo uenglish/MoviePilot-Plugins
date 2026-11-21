@@ -55,6 +55,14 @@ def notification_title(action: str) -> str:
     return f"PT 签到管家 · {'签到结果' if action == '签到' else '登录检测结果'}"
 
 
+def notification_result_changed(previous: object, current: dict) -> bool:
+    """Avoid repeating an automatic retry notice when its visible result is unchanged."""
+    if not isinstance(previous, dict):
+        return True
+    visible_fields = ("success", "message", "logged_in", "bonus", "signin_supported")
+    return any(previous.get(key) != current.get(key) for key in visible_fields)
+
+
 def _site_names(rows, limit=8):
     names = [_compact(result.site_name, 40) for _, result in rows]
     text = '、'.join(names[:limit])

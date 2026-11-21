@@ -195,6 +195,18 @@ class _LegacySdkSession:
             closer()
 
 
+def _request_utils_session(request_utils: Any) -> Any:
+    """Choose the adapter supported by this MoviePilot RequestUtils version."""
+    try:
+        client = request_utils(use_session=True)
+    except TypeError as error:
+        message = str(error)
+        if "unexpected keyword argument" not in message or "use_session" not in message:
+            raise
+        return _LegacySdkSession(request_utils())
+    return _SdkSession(client)
+
+
 def new_http_session() -> Any:
     """
     创建插件 HTTP 会话。
@@ -214,4 +226,4 @@ def new_http_session() -> Any:
 
             return requests.Session()
         return _LegacySdkSession(LegacyRequestUtils())
-    return _SdkSession(RequestUtils(use_session=True))
+    return _request_utils_session(RequestUtils)

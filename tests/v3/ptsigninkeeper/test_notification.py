@@ -3,11 +3,23 @@ import unittest
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
-from app.plugins.ptsigninkeeper.notification import build_notification_content, build_notification_text, notification_title, send_preview
+from app.plugins.ptsigninkeeper.notification import (build_notification_content, build_notification_text,
+    notification_result_changed, notification_title, send_preview)
 from app.plugins.ptsigninkeeper.result import SiteResult
 
 
 class NotificationTests(unittest.TestCase):
+    def test_unchanged_retry_result_does_not_trigger_another_notice(self):
+        previous = {'success': False, 'message': '请求失败', 'logged_in': False,
+                    'bonus': '', 'activity': '01:00', 'engine': 'http',
+                    'signin_supported': True}
+        current = {'success': False, 'message': '请求失败', 'logged_in': False,
+                   'bonus': '', 'activity': '01:10', 'engine': 'browserless',
+                   'signin_supported': True}
+        self.assertFalse(notification_result_changed(previous, current))
+        self.assertTrue(notification_result_changed(previous, {**current, 'logged_in': True}))
+        self.assertTrue(notification_result_changed(None, current))
+
     def test_preview_only_reads_saved_results_and_sends_one_labeled_message(self):
         host = SimpleNamespace(get_data=Mock(return_value={'results':{'1':{'success':True,'message':'签到成功'}}}),
                                _rich_notify=True, post_message=Mock())

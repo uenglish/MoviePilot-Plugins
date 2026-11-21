@@ -16,6 +16,7 @@ from app.db.oper.site import SiteOper
 
 from .ptengine.rewards import normalize_reward
 from .ptengine.tokens import browserless_tokens
+from .ptengine.browserless_policy import browserless_site_ids
 from .result import SiteResult
 from .ptengine.core import (
     BrowserlessPool, DEFAULT_BROWSERLESS_URL, account_from_site, account_ready,
@@ -28,6 +29,7 @@ EXTRA_DEFAULTS = {
     'read_activity': True, 'quiz_ai_enabled': False, 'quiz_ai_timeout': 60,
     'browserless_url': DEFAULT_BROWSERLESS_URL,
     'browserless_tokens': None,
+    'browserless_sites': [],
     'browserless_token': '', 'browserless_token2': '', 'browserless_token3': '',
     'browserless_token4': '', 'browserless_timeout': 100, 'site_rules': '',
 }
@@ -62,6 +64,7 @@ def merge_config(current, ordinary, pt):
     """Migrate once; the enhanced schedule and explicit settings always take priority."""
     result = deepcopy(current or {})
     if result.get('consolidation_version') == MIGRATION_VERSION:
+        result['browserless_sites'] = browserless_site_ids(result.get('browserless_sites'))
         return result
     if not result:
         result = deepcopy(ordinary or {})
@@ -83,6 +86,7 @@ def merge_config(current, ordinary, pt):
     # Never replay another plugin's pending one-shot action during migration.
     result.setdefault('onlyonce', False)
     result.setdefault('clean', False)
+    result['browserless_sites'] = browserless_site_ids(result.get('browserless_sites'))
     return result
 
 

@@ -2,7 +2,8 @@ import re
 from threading import Lock
 from .integration import SignInBridge, merge_config, extend_form, migrate_history
 from .result import SiteResult, has_signin_evidence, has_login_evidence, has_login_form
-from .notification import build_notification_content, build_notification_text, notification_title
+from .notification import (build_notification_content, build_notification_text,
+                            notification_result_changed, notification_title)
 from .dashboard import render_dashboard
 from . import ui, ui_actions
 from .identity_migration import migrate_identity
@@ -88,7 +89,7 @@ class PTSignInKeeper(_PluginBase):
     # 插件图标
     plugin_icon = "../api/v1/plugin/file/PTSignInKeeper/assets/pt-signin-keeper-v1.webp"
     # 插件版本
-    plugin_version = "1.1.0"
+    plugin_version = "1.2.0"
     # 插件作者
     plugin_author = "serendipity"
     # 作者主页
@@ -1852,6 +1853,7 @@ class PTSignInKeeper(_PluginBase):
             return {}
         if status:
             logger.info(f"站点{type_str}任务完成！")
+            notification_changed = False
             # 获取今天的日期
             key = f"{datetime.now().month}月{datetime.now().day}日"
             today_data = self.get_data(key)
@@ -1900,9 +1902,12 @@ class PTSignInKeeper(_PluginBase):
                 site_name = s[0]
                 # ThreadPool.map 保持输入顺序，直接绑定 ID，兼容同名和自定义站点。
                 site_id = site.get("id")
-                results[str(site_id)] = {"success": s.success, "message": s.message,
+                current_result = {"success": s.success, "message": s.message,
                     "logged_in": s.logged_in, "bonus": s.bonus, "activity": s.activity,
                     "engine": s.engine, "signin_supported": s.signin_supported}
+                notification_changed = (notification_changed or notification_result_changed(
+                    results.get(str(site_id)), current_result))
+                results[str(site_id)] = current_result
 
                 if site_id not in reused_ids and not s.logged_in and 'Cookie已失效' in s.message and site_id in builtin_site_ids:
                     # 触发自动登录插件登录
@@ -1967,7 +1972,7 @@ class PTSignInKeeper(_PluginBase):
                            if site.get("id") not in reused_ids]
             notify_status = [result for _, result in notify_rows]
             notify_retry = [site_id for site_id in retry_sites if site_id not in reused_ids]
-            if self._notify and notify_rows:
+            if self._notify and notify_rows and notification_changed:
                 # 普通文本与结构化通知使用相同的摘要和分组，渠道渲染由宿主处理。
                 notification_args = (today, type_str, notify_status,
                                      len(selected_site_ids) - len(reused_ids), notify_retry,

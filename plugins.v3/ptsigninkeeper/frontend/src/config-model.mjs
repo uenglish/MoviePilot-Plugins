@@ -7,7 +7,7 @@ const SIGNIN_DEFAULTS = {
   clean: false, queue_cnt: 5, sign_sites: [], login_sites: [],
   retry_keyword: '错误|失败', retry_time: '09:01', auto_cf: 0,
   read_activity: true, quiz_ai_enabled: false, quiz_ai_timeout: 60, timeout: 30, retry_count: 1, retry_delay_minutes: 10,
-  browserless_url: '', browserless_token: '', browserless_token2: '',
+  browserless_url: '', browserless_sites: [], browserless_token: '', browserless_token2: '',
   browserless_token3: '', browserless_token4: '', browserless_timeout: 100, site_rules: '',
 }
 const INVITEE_DEFAULTS = {
@@ -21,7 +21,10 @@ export function cloneConfig(value) {
 
 export function makeConfig(initial, kind = PLUGIN_KIND) {
   const config = { ...cloneConfig(kind === 'signin' ? SIGNIN_DEFAULTS : INVITEE_DEFAULTS), ...cloneConfig(initial) }
-  if (kind === 'signin') config.browserless_tokens = browserlessTokens(initial || {})
+  if (kind === 'signin') {
+    config.browserless_tokens = browserlessTokens(initial || {})
+    config.browserless_sites = browserlessSites(config.browserless_sites)
+  }
   return config
 }
 
@@ -35,10 +38,29 @@ export function browserlessTokens(config) {
   return [...new Set(values.filter(value => typeof value === 'string').map(value => value.trim()).filter(Boolean))]
 }
 
+export function browserlessSites(values) {
+  if (typeof values === 'string') {
+    try { values = JSON.parse(values) } catch { return [] }
+  }
+  if (!Array.isArray(values)) return []
+  const ids = []
+  for (const value of values) {
+    if (typeof value !== 'string' && typeof value !== 'number') continue
+    const key = String(value).trim()
+    if (!key || ['all', '*'].includes(key.toLowerCase())) continue
+    const id = /^\d+$/.test(key) ? Number(key) : key
+    if (typeof id === 'number' && (!Number.isSafeInteger(id) || id <= 0)) continue
+    if (typeof value === 'number' && typeof id !== 'number') continue
+    if (!ids.includes(id)) ids.push(id)
+  }
+  return ids
+}
+
 export function prepareConfig(config, kind = PLUGIN_KIND) {
   const saved = cloneConfig(config)
   if (kind === 'signin') {
     saved.browserless_tokens = browserlessTokens(saved)
+    saved.browserless_sites = browserlessSites(saved.browserless_sites)
     for (const key of LEGACY_TOKEN_KEYS) delete saved[key]
   }
   return saved

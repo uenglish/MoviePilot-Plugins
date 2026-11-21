@@ -120,7 +120,8 @@ class LocalFallbackTests(unittest.TestCase):
         unapproved.assert_not_called()
 
     def test_runtime_preserves_unstarted_evidence_only_for_direct_preflight(self):
-        bridge = SignInBridge({'site_rules': '', 'browserless_url': '', 'read_activity': False})
+        bridge = SignInBridge({'site_rules': '', 'browserless_url': '', 'read_activity': False,
+                              'browserless_sites': [SITE['id']]})
         signer = Mock()
         signer.sign.return_value = core.SignResult('failed', 'Browserless 额度不足', not_started=True)
         with patch('app.plugins.ptsigninkeeper.ptengine.runtime.run_site_module', return_value=None):

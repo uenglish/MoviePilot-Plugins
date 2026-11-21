@@ -6,7 +6,7 @@
      图片验证码、Cloudflare / Turnstile 挑战、弹窗签到与 Altcha 验证。
 
 引擎默认按站点规则自动判定；未显式声明引擎的站点在 HTTP 直连撞上 Cloudflare
-或验证码时，会自动改用 Browserless 重试一次（可在配置中关闭）。
+或验证码时，只有在 Browserless 站点白名单内才允许回退。
 
 站点登录凭证直接读 MoviePilot「站点管理」里该站的「附加信息」(note)；没有账号密码时
 复用站点管理里保存的 Cookie。每次签到前先用账号密码真实登录站点、换回新的 Cookie 再
@@ -38,6 +38,7 @@ from .core import has_account_evidence, login_page, plain_text
 from .rewards import normalize_reward, daily_header_reward, SITE_UNITS
 from .quiz import AssistantSolver
 from .tokens import browserless_tokens
+from .browserless_policy import browserless_site_ids
 from .core import (
     DEFAULT_BROWSERLESS_URL,
     BrowserlessPool,
@@ -111,6 +112,8 @@ class RuleEngine:
         self._timeout = max(5, min(int(config.get("timeout") or 30), 120))
         self._read_activity = bool(config.get("read_activity", True))
         self._token_list = browserless_tokens(config)
+        self._browserless_sites = frozenset(str(value) for value in
+                                           browserless_site_ids(config.get('browserless_sites')))
 
     def stop(self):
         """Invalidate network work when the owning plugin reloads."""
@@ -119,6 +122,26 @@ class RuleEngine:
     def _browserless_tokens(self) -> List[str]:
         """返回任意数量的有效 Token，保留顺序并去空去重。"""
         return list(self._token_list)
+
+    def _browserless_block_reason(self, info: Mapping[str, Any]) -> str:
+        """Check every cloud-browser path, even when a shared signer already exists."""
+        if not self._is_run_current(None):
+            return "任务已停止，未调用 Browserless"
+        ids = browserless_site_ids([info.get('id')])
+        if not ids or str(ids[0]) not in self._browserless_sites:
+            return "站点不在 Browserless 白名单中，已禁止调用"
+        return ""
+
+    def _sign_browserless(self, info, rule, signer, *, api=False) -> SignResult:
+        """The only entry to the Browserless pool; rules cannot override this policy."""
+        reason = self._browserless_block_reason(info)
+        if reason:
+            return SignResult("failed", reason)
+        if signer is None:
+            return SignResult("failed", "未配置 Browserless 地址或 Token")
+        if api:
+            return signer.sign_api(info, rule, timeout=max(120, self._timeout * 2))
+        return signer.sign(info, rule)
 
 
     @staticmethod
@@ -217,13 +240,18 @@ class RuleEngine:
                 fallback_setting = rule.get("browserless_fallback")
                 allow_fallback = (bool(fallback_setting) if fallback_setting is not None
                                   else outcome is None)
+                if allow_fallback:
+                    blocked = self._browserless_block_reason(info)
+                    if blocked:
+                        reason = "本机未提供 Playwright" if outcome is None else outcome.message
+                        return SignResult("failed", f"{reason}；{blocked}")
                 if allow_fallback and signer is not None:
                     reason = ("本机未提供 Playwright" if outcome is None
                               else f"本机 Playwright 失败：{outcome.message}")
                     logger.info(f"PT签到管家：{site_name} {reason}，改用 Browserless")
                     browser_rule = fallback_rule(
                         rule, outcome.challenge if outcome is not None else "", "")
-                    fallback = signer.sign(info, browser_rule)
+                    fallback = self._sign_browserless(info, browser_rule, signer)
                     if fallback.status in {"success", "already"}:
                         return SignResult(fallback.status,
                                           f"{reason}；Browserless：{fallback.message}")
@@ -241,9 +269,7 @@ class RuleEngine:
                         "当前 MoviePilot 环境没有可用的浏览器助手")
                 return SignResult("failed", "本机缺少 Playwright，且未配置 Browserless")
             if engine == "browserless":
-                if signer is None:
-                    return SignResult("failed", "未配置 Browserless 地址或 Token")
-                return signer.sign(info, rule)
+                return self._sign_browserless(info, rule, signer)
             outcome = http_sign_auto(info, rule, timeout=self._timeout,
                                      proxies=self._proxies_for(info))
             if outcome.status == "failed" and self._should_fallback(rule, outcome):
@@ -262,6 +288,8 @@ class RuleEngine:
         端点；遇到 Cloudflare / 验证码时可用 Browserless 在浏览器上下文内重试。
         """
         for info in infos:
+            if self._browserless_block_reason(info):
+                continue
             try:
                 rule = resolve_rule(info, rules)
             except ValueError:
@@ -326,11 +354,14 @@ class RuleEngine:
             # 异常文本可能带站点回显，不把异常内容写进日志或结果。
             logger.error(f"PT签到管家：{site_name} API Key 签到异常")
             outcome = SignResult("failed", "API Key 签到出现未预期错误")
-        if (outcome.status not in {"success", "already"} and outcome.challenge
+        blocked = self._browserless_block_reason(info)
+        if outcome.status not in {"success", "already"} and outcome.challenge and blocked:
+            outcome = SignResult(outcome.status, f"{outcome.message}；{blocked}",
+                                 challenge=outcome.challenge)
+        elif (outcome.status not in {"success", "already"} and outcome.challenge
                 and signer is not None and hasattr(signer, "sign_api")):
             previous = outcome
-            fallback = signer.sign_api(
-                info, rule, timeout=max(120, self._timeout * 2))
+            fallback = self._sign_browserless(info, rule, signer, api=True)
             if fallback.status in {"success", "already"}:
                 outcome = SignResult(
                     fallback.status,
@@ -499,8 +530,7 @@ class RuleEngine:
                 outcome = self._sign_with_engine(playwright_info, rule, engine, signer, site_name)
                 engine = "playwright"
             elif engine == "browserless":
-                outcome = (SignResult("failed", "未配置 Browserless 地址或 Token")
-                           if signer is None else signer.sign(info, rule))
+                outcome = self._sign_browserless(info, rule, signer)
             else:
                 outcome = http_sign_auto(info, rule, timeout=self._timeout,
                                          proxies=self._proxies_for(info))
@@ -807,6 +837,10 @@ class RuleEngine:
                 # A browser may already have clicked. Do not follow it with another submission.
                 return local_result, "playwright"
 
+        blocked = self._browserless_block_reason(info)
+        if blocked:
+            prefix = f"{outcome.message}；{local_note}；" if local_note else f"{outcome.message}；"
+            return SignResult("failed", prefix + blocked), local_engine
         if signer is None:
             suffix = f"；{local_note}" if local_note else ""
             return SignResult(
@@ -836,7 +870,7 @@ class RuleEngine:
         if discovered.get("path"):
             fallback = dict(fallback, path=str(discovered["path"]))
             logger.info(f"PT签到管家：{site_name} 的签到入口改为 {discovered['path']}")
-        retry = signer.sign(info, fallback)
+        retry = self._sign_browserless(info, fallback, signer)
         prefix = f"{outcome.message}；{local_note}；" if local_note else ""
         if retry.status in {"success", "already"}:
             return SignResult(

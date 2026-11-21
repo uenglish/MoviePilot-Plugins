@@ -12,6 +12,7 @@ from app.plugins.ptsigninkeeper import PTSignInKeeper
 from app.plugins.ptinvitekeeper import PTInviteKeeper
 from app.plugins.ptsigninkeeper.host_ai import LLMHelper
 from app.plugins.ptsigninkeeper.host_compat import NotificationBlock, NotificationContent
+from app.plugins.ptsigninkeeper.ptengine.http import _LegacySdkSession, new_http_session
 from app.plugins.ptsigninkeeper.ptengine.quiz import AssistantSolver
 
 
@@ -33,6 +34,9 @@ class HostCompatibilityTests(unittest.TestCase):
             nav = cls.get_sidebar_nav(None)
             self.assertEqual(len(nav), 1)
             self.assertEqual(nav[0]['section'], 'organize')
+
+    def test_v2_http_sessions_use_the_legacy_request_adapter(self):
+        self.assertIsInstance(new_http_session(), _LegacySdkSession)
 
     def test_v2_notification_preserves_plain_text_and_drops_unsupported_content(self):
         content = NotificationContent(title='签到结果', blocks=[
