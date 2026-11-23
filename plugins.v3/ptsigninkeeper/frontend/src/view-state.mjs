@@ -19,9 +19,16 @@ export function readPreferences(key, storage) {
   try {
     storage ??= globalThis.localStorage
     const value = JSON.parse(storage?.getItem(key) || '{}')
-    return { compact: value.compact !== false, pageSize: [10, 20, 50].includes(value.pageSize) ? value.pageSize : 20 }
-  } catch { return { compact: true, pageSize: 20 } }
+    return { compact: value.compact !== false, overviewCollapsed: value.overviewCollapsed === true, pageSize: [10, 20, 50].includes(value.pageSize) ? value.pageSize : 20 }
+  } catch { return { compact: true, pageSize: 20, overviewCollapsed: false } }
 }
 export function savePreferences(key, value, storage) {
-  try { storage ??= globalThis.localStorage; storage?.setItem(key, JSON.stringify({ compact: value.compact !== false, pageSize: [10, 20, 50].includes(value.pageSize) ? value.pageSize : 20 })) } catch { /* Private browsing may disable storage. */ }
+  try { storage ??= globalThis.localStorage; storage?.setItem(key, JSON.stringify({ compact: value.compact !== false, overviewCollapsed: value.overviewCollapsed === true, pageSize: [10, 20, 50].includes(value.pageSize) ? value.pageSize : 20 })) } catch { /* Private browsing may disable storage. */ }
+}
+
+/** Clamp a user-entered page without allowing NaN or out-of-range requests. */
+export function clampPage(value, pages) {
+  const count = Math.max(1, Math.floor(Number(pages)) || 1)
+  const page = Number(value)
+  return Math.min(count, Math.max(1, Number.isFinite(page) ? Math.floor(page) : 1))
 }

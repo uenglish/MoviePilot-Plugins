@@ -1,8 +1,12 @@
 <script setup>
-import { computed, onMounted, ref } from 'vue'
+import './controls.css'
+import { computed, onMounted, onBeforeUnmount, ref } from 'vue'
+import KeeperButton from './KeeperButton.vue'
 import { unpackPayload } from './config-model.mjs'
 
 const props = defineProps({ api: { type: Object, default: () => ({}) }, pluginId: { type: String, default: 'PTInviteKeeper' }, sourcePluginId: { type: String, default: '' }, config: { type: Object, default: () => ({}) }, allowRefresh: { type: Boolean, default: true } })
+let disposed = false
+onBeforeUnmount(() => { disposed = true })
 const overview = ref(null)
 const loading = ref(false)
 const error = ref(false)
@@ -16,10 +20,11 @@ const updated = computed(() => {
   return `数据更新于 ${date.toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hour12: false })}`
 })
 async function load() {
-  if (loading.value) return
+  if (loading.value || disposed) return
   loading.value = true; error.value = false
   try {
-    overview.value = unpackPayload(await props.api.get(`plugin/${props.pluginId || 'PTInviteKeeper'}/ui/overview`, { feedback: 'silent' }))
+    const result = unpackPayload(await props.api.get(`plugin/${props.pluginId || 'PTInviteKeeper'}/ui/overview`, { feedback: 'silent' }))
+    if (!disposed) overview.value = result
   } catch { error.value = true }
   finally { loading.value = false }
 }
@@ -27,22 +32,22 @@ onMounted(load)
 </script>
 
 <template>
-  <section class="invite-widget" :aria-busy="loading">
-    <header><div><span class="widget-kicker">INVITATIONS</span><h3>{{ config.title || '邀请管理' }}</h3></div><button v-if="allowRefresh" type="button" :disabled="loading" :aria-label="loading ? '正在读取数据' : '重新读取数据'" @click="load"><span :class="{ rotating: loading }" aria-hidden="true">↻</span></button></header>
+  <section class="invite-widget keeper-ui" :aria-busy="loading">
+    <header><div><span class="widget-kicker">邀请概况</span><h3>{{ config.title || '邀请管理' }}</h3></div><KeeperButton v-if="allowRefresh" variant="tonal" icon="refresh" :loading="loading" :aria-label="loading ? '正在读取数据' : '重新读取数据'" @click="load" /></header>
     <div v-if="error && !overview" class="widget-error" role="status">暂时无法读取邀请数据<button type="button" @click="load">重试</button></div>
     <template v-else>
       <div class="widget-stats">
         <div><strong>{{ summary.sites ?? '—' }}</strong><span>站点</span></div>
         <div class="good"><strong>{{ summary.invitable ?? '—' }}</strong><span>可邀请</span></div>
         <div :class="{ warning: summary.problem > 0 }"><strong>{{ summary.problem ?? '—' }}</strong><span>需处理</span></div>
-        <div><strong>{{ summary.members ?? '—' }}</strong><span>成员</span></div>
+        <div><strong>{{ summary.members ?? '—' }}</strong><span>成员记录</span></div>
       </div>
       <div class="widget-status"><span><i></i>剩余名额 <b>{{ summary.quota ?? '—' }}</b></span><a :href="pageUrl">查看全部 <span aria-hidden="true">↗</span></a></div>
       <div v-if="rows.length" class="widget-sites">
         <div v-for="row in rows" :key="row.id" class="widget-site"><span class="site-name" :title="row.name">{{ row.name }}</span><span :class="['site-state', row.needs_action ? 'warning' : row.can_invite ? 'good' : 'muted']">{{ row.label }}</span><span class="quota">{{ row.quota ?? '—' }} <small>名额</small></span></div>
       </div>
       <div v-else-if="!loading" class="widget-empty">执行一次刷新后，这里会显示邀请概况。</div>
-      <footer><span :class="{ warning: error }">{{ error ? '读取失败，保留上次显示' : updated }}</span><span v-if="summary.low_ratio > 0">{{ summary.low_ratio }} 位成员分享率偏低</span></footer>
+      <footer><span :class="{ warning: error }">{{ error ? '读取失败，保留上次显示' : updated }}</span><span v-if="summary.low_ratio > 0">{{ summary.low_ratio }} 条成员记录分享率偏低</span></footer>
     </template>
   </section>
 </template>

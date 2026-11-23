@@ -1,8 +1,13 @@
 <script setup>
+import './host-layout.css'
+import './controls.css'
 import { ref, computed, watch, onMounted, onBeforeUnmount, nextTick, defineAsyncComponent } from 'vue'
 import { createRequestGate, createDetailCache, readPreferences, savePreferences } from './view-state.mjs'
 const SettingsPage = defineAsyncComponent(() => import('./SettingsPage.vue'))
 import SiteAvatar from './SiteAvatar.vue'
+import KeeperButton from './KeeperButton.vue'
+import KeeperIcon from './KeeperIcon.vue'
+import { clampPage } from './view-state.mjs'
 import { PLUGIN_ID, PLUGIN_KIND, unpackPayload } from './config-model.mjs'
 
 const props = defineProps({ api: { type: Object, default: () => ({}) }, pluginId: { type: String, default: '' }, sourcePluginId: { type: String, default: '' }, navKey: { type: String, default: '' } })
@@ -12,8 +17,11 @@ const id = computed(() => props.pluginId || PLUGIN_ID)
 const model = ref({ items: [], summary: {}, categories: [], pages: 1, total: 0 })
 const loading = ref(true), error = ref(''), notice = ref(''), query = ref(''), category = ref('all')
 const page = ref(1), pageSize = ref(20), sort = ref('priority'), day = ref(''), includeInactive = ref(false)
+const overviewCollapsed = ref(false), filtersOpen = ref(false)
+const exporting = ref(false)
 const compact = ref(true), expanded = ref(''), detail = ref(null), detailLoading = ref(false), detailError = ref('')
 const memberQuery = ref(''), memberStatus = ref('all'), memberPage = ref(1), actionPending = ref(false)
+const detailTrigger = ref(null)
 const panel = ref(null), tableScroll = ref(null), showSettings = ref(false)
 const listGate = createRequestGate(), detailGate = createRequestGate(), detailCache = createDetailCache(30000)
 const pluginTitle = signin ? 'PT 签到管家' : 'PT 邀请管家'
@@ -38,14 +46,14 @@ const metrics = computed(() => signin ? [
 ] : [
   { label: '可邀请站点', value: summary.value.invitable, tone: 'success', key: 'invitable', note: '当前具备邀请条件' },
   { label: '剩余名额', value: summary.value.quota, tone: 'accent', key: 'all', note: `永久 ${number(summary.value.permanent)} · 临时 ${number(summary.value.temporary)}` },
-  { label: '邀请成员', value: summary.value.members, tone: 'info', key: 'all', note: `低分享率 ${number(summary.value.low_ratio)} · 禁用 ${number(summary.value.banned)}` },
+  { label: '成员记录', value: summary.value.members, tone: 'info', key: 'all', note: `跨站成员记录 · 低分享率 ${number(summary.value.low_ratio)}` },
   { label: '待处理', value: summary.value.problem, tone: 'error', key: 'problem', note: '连接、验证或数据读取异常' },
 ])
 const tabs = computed(() => signin ? [
   { key: 'all', label: '全部站点', count: totalSites.value },
   { key: 'problem', label: '待处理', count: (summary.value.failed || 0) + (summary.value.pending || 0) },
   { key: 'success', label: '签到完成', count: summary.value.success },
-  { key: 'no_sign', label: '登录保号', count: summary.value.no_sign },
+  { key: 'no_sign', label: '仅登录站点', count: summary.value.no_sign },
 ] : [
   { key: 'all', label: '全部站点', count: totalSites.value },
   { key: 'invitable', label: '可邀请', count: summary.value.invitable },
@@ -76,6 +84,7 @@ function activity(value) { return String(value || '').replace(/\s*\([^)]*(?:秒|
 function qs(values) { return new URLSearchParams(Object.entries(values).filter(([, v]) => v !== undefined && v !== null && v !== '')).toString() }
 async function get(path, values = {}) { return unpackPayload(await props.api.get(`plugin/${id.value}/ui/${path}?${qs(values)}`, { feedback: 'silent' })) }
 function closeDetail() {
+  if (detailTrigger.value && panel.value?.contains(document.activeElement) && document.activeElement?.closest('.detail-panel')) detailTrigger.value.focus()
   detailGate.invalidate(); expanded.value = ''; detail.value = null; detailError.value = ''; detailLoading.value = false
   clearTimeout(memberTimer)
 }
@@ -83,7 +92,7 @@ function resetPage() { page.value = 1; closeDetail() }
 function selectCategory(value) { category.value = value }
 function schedulePoll() {
   clearTimeout(pollTimer)
-  if (!disposed && !document.hidden && (model.value.task?.running || model.value.refreshing))
+  if (!disposed && !showSettings.value && !document.hidden && (model.value.task?.running || model.value.refreshing))
     pollTimer = setTimeout(() => load({ quiet: true }), 3000)
 }
 async function load({ quiet = false } = {}) {
@@ -112,7 +121,8 @@ function scheduleDetail() {
   clearTimeout(memberTimer)
   memberTimer = setTimeout(loadDetail, 180)
 }
-function toggle(row) {
+function toggle(row, event) {
+  if (event?.currentTarget) detailTrigger.value = event.currentTarget
   if (expanded.value === row.id) { closeDetail(); return }
   detailGate.invalidate(); expanded.value = row.id; detail.value = null; detailError.value = ''
   memberQuery.value = ''; memberStatus.value = 'all'; memberPage.value = 1
@@ -133,11 +143,12 @@ async function loadDetail() {
 }
 function visibilityChanged() {
   if (document.hidden) clearTimeout(pollTimer)
-  else if (busy.value) load({ quiet: true })
+  else if (busy.value && !showSettings.value) load({ quiet: true })
 }
 async function settingsClosed(saved = false) {
   showSettings.value = false
   if (saved) { detailCache.clear(); await load({ quiet: true }); if (expanded.value) scheduleDetail() }
+  else schedulePoll()
 }
 async function run(scope = 'pending', site = '') {
   if (busy.value || historical.value) return
@@ -149,6 +160,8 @@ async function run(scope = 'pending', site = '') {
   finally { actionPending.value = false }
 }
 async function exportData() {
+  if (exporting.value) return
+  exporting.value = true
   releaseExport()
   try {
     const data = await get('export', { query: query.value, category: category.value, day: day.value, include_inactive: includeInactive.value })
@@ -162,22 +175,26 @@ async function exportData() {
     }
     notice.value = `已生成 ${rows.length} 条记录。`
   } catch { notice.value = '导出失败，请重试。' }
+  finally { exporting.value = false }
 }
 async function changePage(value) {
-  page.value = value; closeDetail(); await load(); await nextTick()
+  if (loading.value) return
+  const target = clampPage(value, model.value.pages)
+  if (target === page.value) return
+  page.value = target; closeDetail(); await load(); await nextTick()
   if (tableScroll.value) tableScroll.value.scrollTop = 0
   panel.value?.scrollIntoView({ block: 'start', behavior: 'instant' })
 }
-function goSettings() { showSettings.value = true }
+function goSettings() { clearTimeout(pollTimer); showSettings.value = true }
 watch([query, category, sort, pageSize, day, includeInactive], (values, previous) => {
   listGate.invalidate(); detailGate.invalidate(); clearTimeout(searchTimer); resetPage()
   searchTimer = setTimeout(() => load(), values[0] !== previous[0] ? 250 : 0)
 })
 watch([memberQuery, memberStatus], () => { detailGate.invalidate(); memberPage.value = 1; scheduleDetail() })
-watch([compact, pageSize], () => savePreferences(preferencesKey.value, { compact: compact.value, pageSize: pageSize.value }))
+watch([compact, pageSize, overviewCollapsed], () => savePreferences(preferencesKey.value, { compact: compact.value, pageSize: pageSize.value, overviewCollapsed: overviewCollapsed.value }))
 onMounted(() => {
   const preferences = readPreferences(preferencesKey.value)
-  compact.value = preferences.compact; pageSize.value = preferences.pageSize
+  compact.value = preferences.compact; pageSize.value = preferences.pageSize; overviewCollapsed.value = preferences.overviewCollapsed
   document.addEventListener('visibilitychange', visibilityChanged)
   // The single list scheduler coalesces restoration and initial loading.
   clearTimeout(searchTimer); searchTimer = setTimeout(() => load(), 0)
@@ -191,76 +208,76 @@ onBeforeUnmount(() => {
 
 <template>
   <SettingsPage v-if="showSettings" :api="api" :plugin-id="id" :source-plugin-id="sourcePluginId" embedded @close="settingsClosed" />
-  <section v-show="!showSettings" class="mp-desk pt-invite-page" :class="{ compact, 'invite-desk': !signin }">
+  <section v-show="!showSettings" class="mp-desk keeper-ui pt-invite-page" :class="{ compact, 'invite-desk': !signin }">
     <header class="desk-heading">
       <div class="heading-identity">
-        <VIcon :icon="signin ? 'mdi-calendar-check-outline' : 'mdi-email-plus-outline'" color="primary" size="28" />
-        <div class="heading-copy"><h1>{{ pluginTitle }}</h1><p>{{ number(totalSites) }} 个{{ signin ? '启用' : '已记录' }}站点<span class="separator">·</span>{{ signin ? `${model.date || '今日'} 的签到与登录` : `最近更新 ${timestamp(model.updated_at)}` }}</p></div>
+        <div class="identity-mark"><KeeperIcon :name="signin ? 'calendar' : 'invite'" :size="25" /></div>
+        <div class="heading-copy"><p class="eyebrow">{{ signin ? '站点日常' : '邀请与成员' }}</p><h1>{{ pluginTitle }}</h1><p>{{ number(totalSites) }} 个站点<span class="separator">/</span>{{ signin ? (model.date || '今日') : `更新于 ${timestamp(model.updated_at)}` }}</p></div>
       </div>
       <div class="heading-actions">
-        <VTooltip text="读取已保存的最新结果，不访问 PT 站点">
-          <template #activator="{ props: tipProps }"><VBtn v-bind="tipProps" variant="text" color="primary" icon="mdi-refresh" :loading="loading" aria-label="刷新显示" @click="load()" /></template>
-        </VTooltip>
-        <VTooltip text="插件设置">
-          <template #activator="{ props: tipProps }"><VBtn v-bind="tipProps" variant="text" color="primary" icon="mdi-tune-variant" aria-label="打开插件设置" @click="goSettings" /></template>
-        </VTooltip>
-        <VTooltip :text="signin ? '访问未完成、失败或登录异常的站点，执行签到与登录' : '访问异常站点，重新获取邀请资格与成员数据'">
-          <template #activator="{ props: tipProps }"><VBtn v-bind="tipProps" variant="tonal" color="primary" prepend-icon="mdi-play" :loading="busy" :disabled="busy || historical" @click="run('pending')">{{ busy ? '任务进行中' : historical ? '历史记录' : signin ? '执行签到' : '重试异常' }}</VBtn></template>
-        </VTooltip>
+        <KeeperButton variant="tonal" icon="refresh" :loading="loading" aria-label="刷新显示" title="读取最新记录" @click="load()" />
+        <KeeperButton variant="tonal" prepend-icon="settings" @click="goSettings">设置</KeeperButton>
+        <KeeperButton variant="filled" prepend-icon="play" :loading="busy" :disabled="busy || historical" @click="run('pending')">{{ busy ? '任务进行中' : historical ? '历史记录' : signin ? '执行签到' : '重试异常' }}</KeeperButton>
       </div>
     </header>
-
-    <div v-if="historical" class="history-notice">正在查看 {{ model.date }} 的历史记录。<button class="text-button" @click="day = ''">返回今天</button></div>
-    <div class="metric-strip" aria-label="站点概况">
-      <VSheet tag="button" type="button" v-for="metric in metrics" :key="metric.label" class="metric app-surface-static" :aria-label="`${metric.label} ${number(metric.value)}，查看站点`" :class="`tone-${metric.tone}`" @click="selectCategory(metric.key)"><span class="metric-label"><i class="dot"></i>{{ metric.label }}</span><strong>{{ number(metric.value) }}<small>{{ !signin && metric.label === '剩余名额' ? '个' : !signin && metric.label === '邀请成员' ? '人' : '站' }}</small></strong><span class="metric-note">{{ metric.note }}</span></VSheet>
+    <div v-if="historical" class="history-notice"><span>正在查看 {{ model.date }} 的历史记录</span><button class="text-button" @click="day = ''">返回今天</button></div>
+    <div class="overview-heading"><span>运行概况</span><button class="text-button overview-toggle" :aria-expanded="!overviewCollapsed" @click="overviewCollapsed = !overviewCollapsed">{{ overviewCollapsed ? '展开概况' : '收起概况' }}<KeeperIcon name="chevron" :size="14" :class="{ rotated: !overviewCollapsed }" /></button></div>
+    <div v-if="!overviewCollapsed" class="metric-strip" aria-label="站点概况">
+      <button type="button" v-for="metric in metrics" :key="metric.label" class="metric" :aria-label="`${metric.label} ${number(metric.value)}，筛选站点`" :aria-pressed="category === metric.key" :class="[`tone-${metric.tone}`, { 'metric-active': category === metric.key && category !== 'all' }]" @click="selectCategory(metric.key)"><span class="metric-label"><i class="dot"></i>{{ metric.label }}</span><strong>{{ number(metric.value) }}<small>{{ !signin && metric.label === '剩余名额' ? '个' : !signin && metric.label === '成员记录' ? '条' : '站' }}</small></strong><span class="metric-note">{{ metric.note }}</span></button>
     </div>
     <div v-if="notice || busy" class="notice" role="status"><span>{{ busy ? '正在访问站点，结果会自动更新；可以继续筛选与查看记录。' : notice }}</span><a v-if="csvFile && !busy" class="csv-download" :href="csvFile.url" :download="csvFile.name">下载 CSV 文件</a><button v-if="!busy" aria-label="关闭提示" @click="dismissNotice">×</button></div>
 
-    <VSheet class="data-panel app-surface-static"><div ref="panel">
-      <div class="panel-heading"><div><h3>站点列表</h3><span>{{ signin ? '核对签到、登录与奖励' : '查看邀请资格、名额与成员' }}</span></div><span class="record-count">{{ model.total || 0 }} 个结果</span><button v-if="expanded" class="text-button" @click="closeDetail">收起详情</button></div>
-      <div class="panel-tabs"><div class="tab-list" role="group" aria-label="站点状态筛选"><button v-for="tab in tabs" :key="tab.key" :aria-pressed="category === tab.key" :class="{ selected: category === tab.key }" @click="selectCategory(tab.key)">{{ tab.label }}<span>{{ tab.count || 0 }}</span></button></div><div class="legend"><span><i class="dot success"></i>成功</span><span><i class="dot error"></i>{{ signin ? '失败' : '需处理' }}</span><span><i class="dot warning"></i>{{ signin ? '未确认' : '受限' }}</span></div></div>
-      <div class="toolbar">
-        <VTextField v-model="query" class="search-field" type="search" placeholder="搜索站点或原因" aria-label="搜索站点或原因" prepend-inner-icon="mdi-magnify" variant="outlined" density="compact" hide-details :loading="loading" />
-        <VSelect v-if="signin" v-model="day" class="filter-field" :items="[{ title: '今天', value: '' }, ...(model.days || []).filter(d => (typeof d === 'string' ? d : d.value) !== model.today).map(d => ({ title: typeof d === 'string' ? d : d.label, value: typeof d === 'string' ? d : d.value }))]" aria-label="记录日期" variant="outlined" density="compact" hide-details />
-        <VSelect :model-value="customCategories.some(c => c.key === category) ? category : ''" class="filter-field" :items="[{ title: '更多状态', value: '' }, ...customCategories.map(c => ({ title: c.label + (c.count === undefined ? '' : ` (${c.count})`), value: c.key }))]" aria-label="更多状态" variant="outlined" density="compact" hide-details @update:model-value="category = $event || 'all'" />
-        <VSelect v-model="sort" class="filter-field" :items="[{ title: '站点顺序', value: 'priority' }, { title: '异常优先', value: 'status' }, { title: '名称排序', value: 'name' }, ...(signin ? [{ title: '奖励数值', value: 'reward' }] : [{ title: '名额最多', value: 'quota' }, { title: '成员最多', value: 'members' }, { title: '最近更新', value: 'updated' }])]" aria-label="排序" variant="outlined" density="compact" hide-details />
-        <div class="toolbar-spacer"></div><VBtn variant="text" color="primary" :aria-pressed="compact" :prepend-icon="compact ? 'mdi-format-line-spacing' : 'mdi-format-line-spacing'" @click="compact = !compact">{{ compact ? '紧凑' : '舒适' }}</VBtn><VBtn variant="text" color="primary" prepend-icon="mdi-download" @click="exportData">导出</VBtn>
+    <section class="data-panel" aria-label="站点记录"><div ref="panel">
+      <div class="panel-heading">
+        <div><h2>站点记录</h2><span class="record-count">{{ model.total || 0 }} 个结果</span></div>
+        <div class="panel-tools"><button v-if="expanded" class="text-button" @click="closeDetail">收起详情</button><KeeperButton :aria-pressed="compact" prepend-icon="density" @click="compact = !compact">{{ compact ? '紧凑' : '舒适' }}</KeeperButton><KeeperButton prepend-icon="download" :loading="exporting" @click="exportData">导出</KeeperButton></div>
+      </div>
+      <div class="panel-tabs"><div class="tab-list" role="group" aria-label="站点状态筛选"><button v-for="tab in tabs" :key="tab.key" :aria-pressed="category === tab.key" :class="{ selected: category === tab.key }" @click="selectCategory(tab.key)">{{ tab.label }}<span>{{ tab.count || 0 }}</span></button></div></div>
+      <div class="toolbar" :class="{ 'invite-toolbar': !signin, 'filters-open': filtersOpen }">
+        <div class="toolbar-query"><label class="toolbar-field toolbar-search"><span>搜索站点</span><div class="keeper-search"><KeeperIcon name="search" :size="17" /><input v-model="query" class="keeper-control" type="search" placeholder="名称、域名或结果关键词" aria-label="搜索站点或原因"><button v-if="query" type="button" class="search-clear" aria-label="清除搜索" @click="query = ''"><KeeperIcon name="close" :size="14" /></button></div></label><KeeperButton class="toolbar-toggle" variant="tonal" prepend-icon="settings" :aria-expanded="filtersOpen" :aria-label="filtersOpen ? '收起筛选条件' : '展开筛选条件'" @click="filtersOpen = !filtersOpen">筛选</KeeperButton></div>
+        <label v-if="signin" class="toolbar-field"><span>记录日期</span><select v-model="day" class="keeper-control" aria-label="记录日期"><option value="">今天</option><option v-for="d in (model.days || []).filter(d => (typeof d === 'string' ? d : d.value) !== model.today)" :key="typeof d === 'string' ? d : d.value" :value="typeof d === 'string' ? d : d.value">{{ typeof d === 'string' ? d : d.label }}</option></select></label>
+        <label class="toolbar-field"><span>状态细分</span><select :value="customCategories.some(c => c.key === category) ? category : ''" class="keeper-control" aria-label="更多状态" @change="category = $event.target.value || 'all'"><option value="">全部类型</option><option v-for="c in customCategories" :key="c.key" :value="c.key">{{ c.label }}{{ c.count === undefined ? '' : ` (${c.count})` }}</option></select></label>
+        <label class="toolbar-field"><span>排序方式</span><select v-model="sort" class="keeper-control" aria-label="排序"><option value="priority">站点顺序</option><option value="status">异常优先</option><option value="name">名称排序</option><option v-if="signin" value="reward">奖励数值</option><template v-else><option value="quota">名额最多</option><option value="members">成员最多</option><option value="updated">最近更新</option></template></select></label>
       </div>
       <div v-if="query || category !== 'all'" class="filter-note"><span>当前筛选：{{ query || '全部关键词' }}<span v-if="category !== 'all'"> · {{ [...tabs, ...customCategories].find(c => c.key === category)?.label }}</span></span><button class="text-button" @click="query = ''; category = 'all'">清除筛选</button></div>
+
       <div v-if="signin && summary.inactive" class="scope-note"><label><input v-model="includeInactive" type="checkbox"> 显示 {{ summary.inactive }} 个已停用站点</label><span>已停用站点不计入失败统计</span></div>
-      <div v-if="error" class="empty-state error-state" role="alert"><strong>暂时无法加载</strong><p>{{ error }}</p><VBtn variant="tonal" color="primary" @click="load()">重新加载</VBtn></div>
+      <div v-if="error" class="empty-state error-state" role="alert"><strong>暂时无法加载</strong><p>{{ error }}</p><KeeperButton variant="tonal" color="primary" @click="load()">重新加载</KeeperButton></div>
       <div v-else-if="loading && !model.items?.length" class="loading-skeleton" aria-label="正在加载"><div v-for="i in 6" :key="i"></div></div>
-      <div v-else-if="!model.items?.length" class="empty-state"><span class="empty-symbol">✓</span><strong>{{ category === 'problem' ? '没有需要处理的站点' : '没有匹配的站点' }}</strong><p>可以调整筛选条件，或查看全部站点。</p><VBtn variant="tonal" color="primary" @click="query = ''; category = 'all'">查看全部</VBtn></div>
+      <div v-else-if="!model.items?.length" class="empty-state"><span class="empty-symbol">✓</span><strong>{{ category === 'problem' ? '没有需要处理的站点' : '没有匹配的站点' }}</strong><p>可以调整筛选条件，或查看全部站点。</p><KeeperButton variant="tonal" color="primary" @click="query = ''; category = 'all'">查看全部</KeeperButton></div>
       <div v-else ref="tableScroll" class="table-scroll" :aria-busy="loading">
-        <table class="site-table"><thead><tr><th class="site-column">站点</th><template v-if="signin"><th>签到状态</th><th>登录状态</th><th class="amount">本次奖励</th><th class="wide-column">最近动向 / 结果</th></template><template v-else><th>邀请状态</th><th class="amount">剩余名额</th><th class="amount">成员</th><th class="wide-column">状态说明</th><th>更新时间</th></template><th class="action-column"><span class="sr-only">操作</span></th></tr></thead>
+        <table class="site-table"><thead><tr><th class="site-column">站点</th><template v-if="signin"><th>签到状态</th><th>登录状态</th><th class="amount">本次奖励</th><th class="wide-column">最近访问 / 结果</th></template><template v-else><th>邀请状态</th><th class="amount">剩余名额</th><th class="amount">成员</th><th class="wide-column">状态说明</th><th>更新时间</th></template><th class="action-column"><span class="sr-only">操作</span></th></tr></thead>
           <tbody><template v-for="row in model.items" :key="row.id">
             <tr :class="[`row-${rowTone(row)}`, { 'is-expanded': expanded === row.id }]">
-              <td class="identity-cell" data-label="站点"><button class="site-button" :aria-expanded="expanded === row.id" :aria-label="`${expanded === row.id ? '收起' : '展开'} ${row.name} 详情`" @click="toggle(row)"><span class="row-chevron" :class="{ open: expanded === row.id }">›</span><SiteAvatar :api="api" :site-id="signin ? row.id : row.site_id" :name="row.name" /><span class="site-identity"><strong>{{ row.name }}</strong><small>{{ domain(row.url) || (row.active === false ? '已停用' : '站点记录') }}</small></span></button></td>
-              <template v-if="signin"><td data-label="签到"><span class="status-badge" :class="`tone-${color(row.signin_status?.color || row.color)}`"><b>{{ symbol(row.signin_status?.color || row.color) }}</b>{{ row.signin_status?.label || row.label }}</span></td><td data-label="登录"><span class="status-badge" :class="`tone-${color(row.login_status?.color)}`"><b>{{ symbol(row.login_status?.color) }}</b>{{ row.login_status?.label || '未执行' }}</span></td><td class="amount reward" data-label="本次奖励" :class="{ muted: !row.bonus || ['—', '未获取'].includes(row.bonus) }">{{ row.bonus || '未获取' }}</td><td class="result-cell" data-label="最近动向 / 结果"><div class="result-line" :title="row.message">{{ row.category === 'failed' || row.category === 'pending' ? row.message : activity(row.activity) }}</div><small class="row-subline" v-if="row.category === 'failed'">展开查看回执与历史</small></td></template>
-              <template v-else><td data-label="邀请状态"><span class="status-badge" :class="`tone-${color(row.color)}`"><b>{{ symbol(row.color) }}</b>{{ row.label }}</span></td><td class="amount" data-label="剩余名额"><strong>{{ number(row.quota) }}</strong><small class="row-subline">{{ number(row.permanent) }} 永久 / {{ number(row.temporary) }} 临时</small></td><td class="amount" data-label="成员"><strong>{{ row.cached_after_failure && !row.updated_at ? '—' : row.members }}</strong><small v-if="row.low_ratio || row.banned" class="row-subline danger-text">{{ row.low_ratio + row.banned }} 人需关注</small></td><td class="result-cell" data-label="状态说明"><div class="result-line" :title="row.reason">{{ row.reason || '暂无说明' }}</div><small v-if="row.cached_after_failure" class="row-subline danger-text">获取失败 · 数值为历史缓存</small></td><td data-label="更新时间"><span class="time-cell" :title="timestamp(row.updated_at)">{{ row.cached_after_failure ? '获取失败' : relative(row.updated_at) }}</span><small v-if="row.stale" class="row-subline danger-text">{{ row.updated_at ? '已超过 12 小时' : '暂无成功时间' }}</small></td></template>
-              <td class="row-actions"><VBtn variant="text" color="primary" size="small" class="row-detail-button" :aria-label="`查看 ${row.name} 详情`" @click="toggle(row)">{{ expanded === row.id ? '收起' : '详情' }}</VBtn></td>
+              <td class="identity-cell" data-label="站点"><button class="site-button" :aria-expanded="expanded === row.id" :aria-label="`${expanded === row.id ? '收起' : '展开'} ${row.name} 详情`" @click="toggle(row, $event)"><span class="row-chevron" :class="{ open: expanded === row.id }">›</span><SiteAvatar :api="api" :site-id="signin ? row.id : row.site_id" :name="row.name" /><span class="site-identity"><strong>{{ row.name }}</strong><small>{{ domain(row.url) || (row.active === false ? '已停用' : '站点记录') }}</small></span></button></td>
+              <template v-if="signin"><td data-label="签到"><span :title="row.message" class="status-badge" :class="`tone-${color(row.signin_status?.color || row.color)}`"><b>{{ symbol(row.signin_status?.color || row.color) }}</b>{{ row.signin_status?.label || row.label }}</span></td><td data-label="登录"><span class="status-badge" :class="`tone-${color(row.login_status?.color)}`"><b>{{ symbol(row.login_status?.color) }}</b>{{ row.login_status?.label || '未执行' }}</span></td><td class="amount reward" data-label="本次奖励" :class="{ muted: !row.bonus || ['—', '未获取'].includes(row.bonus) }">{{ row.bonus || '未获取' }}</td><td class="result-cell" :data-label="['failed', 'pending'].includes(row.category) ? '处理原因' : '最近访问'"><div class="result-line" :title="row.message || activity(row.activity)">{{ ['failed', 'pending'].includes(row.category) ? row.message || '等待执行' : activity(row.activity) }}</div><small v-if="row.logged_in" class="row-subline">{{ row.visit_label || '保活未确认' }}</small></td></template>
+              <template v-else><td data-label="邀请状态"><span class="status-badge" :class="`tone-${color(row.color)}`"><b>{{ symbol(row.color) }}</b>{{ row.label }}</span></td><td class="amount" data-label="剩余名额"><strong>{{ number(row.quota) }}</strong><small class="row-subline">{{ number(row.permanent) }} 永久 / {{ number(row.temporary) }} 临时</small></td><td class="amount" data-label="成员"><strong>{{ row.cached_after_failure && !row.updated_at ? '—' : row.members }}</strong><small v-if="row.low_ratio || row.banned" class="row-subline danger-text">{{ (row.low_ratio || 0) + (row.banned || 0) }} 人需关注</small></td><td class="result-cell" data-label="状态说明"><div class="result-line" :title="row.reason">{{ row.reason || '暂无说明' }}</div><small v-if="row.cached_after_failure" class="row-subline danger-text">获取失败 · 数值为历史缓存</small></td><td data-label="更新时间"><span class="time-cell" :title="timestamp(row.updated_at)">{{ row.cached_after_failure ? '获取失败' : relative(row.updated_at) }}</span><small v-if="row.stale" class="row-subline danger-text">{{ row.updated_at ? '已超过 12 小时' : '暂无成功时间' }}</small></td></template>
+              <td class="row-actions"><KeeperButton variant="text" color="primary" size="small" class="row-detail-button" :aria-label="`查看 ${row.name} 详情`" @click="toggle(row, $event)">{{ expanded === row.id ? '收起' : '详情' }}</KeeperButton></td>
             </tr>
-            <tr v-if="expanded === row.id" class="detail-row"><td :colspan="signin ? 6 : 7"><div class="detail-panel">
-              <div class="detail-heading"><div><strong>{{ row.name }}</strong><span>{{ signin ? '近 14 天记录' : '邀请详情与成员健康' }}</span></div><div class="detail-actions"><a v-if="row.url" :href="row.url" target="_blank" rel="noopener noreferrer">打开站点 ↗</a><VBtn variant="tonal" color="primary" :disabled="busy || historical || row.active === false" @click="run('site', row.id)">{{ signin ? '重试此站' : '重新获取此站' }}</VBtn><button class="icon-button" aria-label="收起详情" @click="closeDetail">×</button></div></div>
-              <div v-if="detailLoading && !detail" class="detail-loading"><span class="spinner"></span>正在读取详情…</div><div v-if="detailError" class="detail-error">{{ detailError }}<VBtn variant="tonal" color="primary" @click="loadDetail">重试</VBtn></div>
+            <tr v-if="expanded === row.id" class="detail-row"><td :colspan="signin ? 6 : 7"><div class="detail-panel" :aria-busy="detailLoading" @keydown.esc.stop="closeDetail">
+              <div class="detail-heading"><div><strong>{{ row.name }}</strong><span>{{ signin ? '近 14 天记录' : '邀请详情与成员健康' }}</span></div><div class="detail-actions"><a v-if="row.url" :href="row.url" target="_blank" rel="noopener noreferrer">打开站点 ↗</a><KeeperButton variant="tonal" color="primary" :disabled="busy || historical || row.active === false" @click="run('site', row.id)">{{ signin ? '重试此站' : '重新获取此站' }}</KeeperButton><button class="icon-button" aria-label="收起详情" @click="closeDetail">×</button></div></div>
+              <div v-if="detailLoading && !detail" class="detail-loading"><span class="spinner"></span>正在读取详情…</div><div v-if="detailError" class="detail-error">{{ detailError }}<KeeperButton variant="tonal" color="primary" @click="loadDetail">重试</KeeperButton></div>
               <template v-if="detail && signin"><div class="receipt" :class="`tone-${rowTone(row)}`"><strong>最近回执</strong><p>{{ row.message || '暂无回执' }}</p></div><details class="history-fold"><summary>签到与登录历史 <span>{{ detail.history?.length || 0 }} 天</span></summary><div class="history-list"><div v-for="record in detail.history" :key="record.day" class="history-item"><time>{{ record.day }}</time><span class="status-badge" :class="`tone-${color(record.signin_status?.color)}`">{{ symbol(record.signin_status?.color) }} {{ record.signin_status?.label || '未执行' }}</span><p :title="record.sign?.message">{{ record.sign?.message || '暂无签到记录' }}<small>登录：{{ record.login?.message || (record.sign?.logged_in ? '已确认' : '未记录') }}</small></p><strong class="reward">{{ record.signin_status?.color === 'success' ? record.sign?.bonus ?? '未获取奖励' : '—' }}</strong></div><p v-if="!detail.history?.length" class="muted">暂无历史记录</p></div></details></template>
               <template v-if="detail && !signin"><div class="invite-facts"><div><span>永久 / 临时名额</span><strong>{{ number(row.permanent) }} / {{ number(row.temporary) }}</strong></div><div><span>当前魔力</span><strong>{{ number(row.bonus) }}</strong></div><div><span>兑换单价（永久 / 临时）</span><strong>{{ number(row.permanent_price) }} / {{ number(row.temporary_price) }}</strong></div><div><span>可兑换（按魔力估算）</span><strong>{{ number(row.purchasable_permanent) }} / {{ number(row.purchasable_temporary) }}</strong></div></div><div class="receipt" :class="`tone-${rowTone(row)}`"><strong>{{ row.label }}</strong><p>{{ row.reason }}<span v-if="row.advice"> · {{ row.advice }}</span></p></div>
-                <div class="member-heading"><strong>邀请成员 <span class="muted">{{ detail.total }} 人</span></strong><input v-model="memberQuery" type="search" placeholder="搜索成员…" aria-label="搜索成员"><select v-model="memberStatus" aria-label="成员状态"><option value="all">全部成员</option><option value="low_ratio">低分享率</option><option value="banned">已禁用</option><option value="no_data">数据不全</option><option value="healthy">状态正常</option></select></div>
+                <div class="member-heading"><strong>邀请成员 <span class="muted">{{ detail.total }} 人</span></strong><input v-model="memberQuery" class="keeper-control" type="search" placeholder="搜索成员…" aria-label="搜索成员"><select v-model="memberStatus" class="keeper-control" aria-label="成员状态"><option value="all">全部成员</option><option value="low_ratio">低分享率</option><option value="banned">已禁用</option><option value="no_data">数据不全</option><option value="healthy">状态正常</option></select></div>
                 <div v-if="!detail.items?.length" class="member-empty">{{ memberQuery || memberStatus !== 'all' ? '没有匹配的成员' : row.needs_action ? '本次尚未取得有效成员数据，请查看上方原因。' : '站点未返回成员记录。' }}</div>
                 <div v-else class="member-scroll"><table class="member-table"><thead><tr><th>成员</th><th>分享率</th><th>上传 / 下载</th><th>做种数量</th><th>做种体积</th><th>状态</th></tr></thead><tbody><tr v-for="member in detail.items" :key="member.username"><td><a v-if="member.profile_url" :href="member.profile_url" target="_blank" rel="noopener noreferrer">{{ member.username }} ↗</a><strong v-else>{{ member.username }}</strong><small class="row-subline">{{ member.last_seed_report }}</small></td><td :class="member.health === 'low_ratio' ? 'danger-text' : ''">{{ member.ratio ?? '—' }}</td><td>{{ member.uploaded || '—' }} / {{ member.downloaded || '—' }}</td><td>{{ member.seeding ?? '—' }}</td><td>{{ member.seeding_size || '—' }}</td><td><span class="status-badge" :class="`tone-${member.health === 'healthy' ? 'success' : member.health === 'no_data' ? 'neutral' : 'error'}`">{{ member.banned ? '已禁用' : member.ratio_label }}</span></td></tr></tbody></table></div>
-                <div v-if="detail.pages > 1" class="member-pagination"><VBtn variant="tonal" color="primary" :disabled="memberPage <= 1" @click="memberPage--; loadDetail()">上一页</VBtn><span>{{ memberPage }} / {{ detail.pages }}</span><VBtn variant="tonal" color="primary" :disabled="memberPage >= detail.pages" @click="memberPage++; loadDetail()">下一页</VBtn></div>
+                <div v-if="detail.pages > 1" class="member-pagination"><KeeperButton variant="tonal" color="primary" :disabled="detailLoading || memberPage <= 1" @click="memberPage--; loadDetail()">上一页</KeeperButton><span>{{ memberPage }} / {{ detail.pages }}</span><KeeperButton variant="tonal" color="primary" :disabled="detailLoading || memberPage >= detail.pages" @click="memberPage++; loadDetail()">下一页</KeeperButton></div>
                 <details v-if="detail.history?.length" class="trend-details"><summary>查看该站最近 {{ detail.history.length }} 次记录</summary><div class="trend-points"><div v-for="(point, index) in detail.history" :key="index"><time>{{ timestamp(point.time) }}</time><span>{{ model.categories?.find(c => c.key === point.category)?.label || point.category || '' }}</span><strong>{{ point.quota ?? point.members ?? '—' }}</strong></div></div></details>
               </template>
             </div></td></tr>
           </template></tbody>
         </table>
       </div>
-      <footer class="pagination"><span>显示 {{ rowRange }} 条，共 {{ model.total || 0 }} 条</span><label>每页 <select v-model.number="pageSize" aria-label="每页条数"><option :value="10">10</option><option :value="20">20</option><option :value="50">50</option></select> 条</label><nav aria-label="分页"><button :disabled="loading || page <= 1" aria-label="上一页" @click="changePage(page - 1)">‹</button><button v-for="num in pageNumbers" :key="num" :class="{ current: page === num }" :aria-label="`第 ${num} 页`" :aria-current="page === num ? 'page' : undefined" @click="changePage(num)">{{ num }}</button><button :disabled="loading || page >= (model.pages || 1)" aria-label="下一页" @click="changePage(page + 1)">›</button></nav></footer>
-    </div></VSheet>
-    <div class="desk-footnote"><span>{{ signin ? '奖励以站点回执为准；“未获取”不表示 0。历史按站点展开读取。' : '等级不足、邀请关闭属于站点规则；红色标记需要检查的读取异常。' }}</span><button v-if="!signin" class="text-button" :disabled="busy" @click="run('all')">重新获取全部站点</button></div>
+      <footer class="pagination">
+        <span class="range-label" role="status">第 {{ rowRange }} 条 / 共 {{ model.total || 0 }} 条</span>
+        <label class="page-size">每页<select v-model.number="pageSize" class="keeper-control" aria-label="每页条数"><option :value="10">10</option><option :value="20">20</option><option :value="50">50</option></select>条</label>
+        <nav aria-label="分页"><button :disabled="loading || page <= 1" aria-label="第一页" @click="changePage(1)">«</button><button :disabled="loading || page <= 1" aria-label="上一页" @click="changePage(page - 1)">‹</button><button v-for="num in pageNumbers" :key="num" :disabled="loading" :class="{ current: page === num }" :aria-label="`第 ${num} 页`" :aria-current="page === num ? 'page' : undefined" @click="changePage(num)">{{ num }}</button><button :disabled="loading || page >= (model.pages || 1)" aria-label="下一页" @click="changePage(page + 1)">›</button><button :disabled="loading || page >= (model.pages || 1)" aria-label="最后一页" @click="changePage(model.pages)">»</button></nav>
+        <label class="page-jump">前往<input class="keeper-control" type="number" min="1" :max="model.pages || 1" :value="page" aria-label="跳转页码" :disabled="loading" @change="changePage($event.target.value); $event.target.value = page">页</label>
+      </footer>
+    </div></section>
+    <div class="desk-footnote"><span>{{ signin ? '奖励以站点回执为准；登录有效不等于保活。展开站点查看回执与历史。' : '等级不足、邀请关闭属于站点规则；红色标记需要检查的读取异常。' }}</span><button v-if="!signin" class="text-button" :disabled="busy" @click="run('all')">重新获取全部站点</button></div>
   </section>
 </template>
 
 <style scoped src="./dashboard.css"></style>
-
-<style src="./host-layout.css"></style>
