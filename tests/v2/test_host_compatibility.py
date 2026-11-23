@@ -69,6 +69,19 @@ class HostCompatibilityTests(unittest.TestCase):
             self.assertFalse(AssistantSolver(True).status()['available'])
         self.assertFalse(AssistantSolver(False).status()['available'])
 
+    def test_invitation_notification_uses_its_own_compatibility_module(self):
+        from app.plugins.ptinvitekeeper.notification import build_refresh_content, notification_plain_text
+
+        content = build_refresh_content({'本站': {'data': {'invite_status': {
+            'can_invite': True, 'permanent_count': 2, 'temporary_count': 1}}}}, 1, 0)
+        self.assertEqual(type(content).__module__, 'app.plugins.ptinvitekeeper.host_compat')
+        plugin = object.__new__(PTInviteKeeper)
+        with patch.object(HostPluginBase, 'post_message') as send:
+            plugin.post_message(title=content.title, text=notification_plain_text(content), rich_content=content)
+        self.assertNotIn('rich_content', send.call_args.kwargs)
+        self.assertEqual(send.call_args.kwargs['text'], notification_plain_text(content))
+        self.assertIn('永久 2 · 临时 1', send.call_args.kwargs['text'])
+
     def test_v2_ai_request_reads_response_and_releases_its_client(self):
         transport = SimpleNamespace(aclose=AsyncMock())
         model = SimpleNamespace(ainvoke=AsyncMock(return_value=SimpleNamespace(content='test-answer')),

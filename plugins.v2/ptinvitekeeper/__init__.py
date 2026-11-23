@@ -45,7 +45,7 @@ from . import categories as site_categories
 from . import trend as site_trend
 from . import ui_extra
 from . import ui, ui_actions
-from .notification import build_refresh_notification
+from .notification import build_refresh_content, notification_plain_text
 
 # MoviePilot V2/V3 的插件完整模块名不同，动态重载必须使用运行时包名。
 _PLUGIN_PACKAGE = __package__ or __name__.rsplit('.', 1)[0]
@@ -1505,7 +1505,8 @@ class PTInviteKeeper(_PluginBase):
             if self._notify:
                 self._send_refresh_notification(success_count, error_count, error_details,
                                                 site_names=[site.get('name', '') for site in selected_sites],
-                                                targeted=site_names is not None)
+                                                targeted=site_names is not None,
+                                                previous_records=existing_data)
 
             logger.info(f"增量刷新完成: 成功 {success_count} 个站点, 失败 {error_count} 个站点")
 
@@ -1516,17 +1517,18 @@ class PTInviteKeeper(_PluginBase):
             self._refreshing = False
 
     def _send_refresh_notification(self, success_count, error_count, error_details=None,
-                                   site_names=None, targeted=False):
+                                   site_names=None, targeted=False, previous_records=None):
         """保留通知渠道，仅发送与本次刷新范围一致的邀请结果。"""
         if not success_count and not error_count:
             return
         try:
-            title, text = build_refresh_notification(
+            content = build_refresh_content(
                 self.data_manager.get_site_data(), success_count, error_count, error_details,
-                site_names=site_names, targeted=targeted, diff=getattr(self, '_last_diff', None),
+                site_names=site_names, targeted=targeted, previous_records=previous_records,
             )
-            self.post_message(mtype=NotificationType.SiteMessage, title=title, text=text)
-            logger.info(f"{title}：成功 {success_count} 站，失败 {error_count} 站")
+            self.post_message(mtype=NotificationType.SiteMessage, title=content.title,
+                              text=notification_plain_text(content), rich_content=content)
+            logger.info(f"{content.title}：成功 {success_count} 站，失败 {error_count} 站")
         except Exception as err:
             logger.error(f"PT 邀请管家通知发送失败: {err}")
 

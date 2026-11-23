@@ -42,6 +42,8 @@ def adapt_python(source, plugin=None):
                 module = MODULES.get(node.module, node.module)
             if alias.name == '_PluginBase' and plugin:
                 module = f'app.plugins.{plugin}.host_compat'
+            if node.module == 'app.schemas.message' and plugin:
+                module = f'app.plugins.{plugin}.host_compat'
             name = alias.name + (f' as {alias.asname}' if alias.asname else '')
             imports.append(f'from {module} import {name}')
         start = sum(len(x) for x in lines[:node.lineno - 1]) + node.col_offset
