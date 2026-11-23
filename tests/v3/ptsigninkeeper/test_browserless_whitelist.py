@@ -9,7 +9,7 @@ from app.plugins.ptsigninkeeper.ptengine.core import SignResult
 from app.plugins.ptsigninkeeper.ptengine.runtime import RuleEngine
 
 NS = 'app.plugins.ptsigninkeeper.ptengine.runtime'
-SITE = {'id': 1, 'name': '测试站', 'url': 'https://tangpt.top/', 'cookie': 'test=only'}
+SITE = {'id': 1, 'name': '测试站', 'url': 'https://open.cd/', 'cookie': 'test=only'}
 HTTP_SITE = dict(SITE, url='https://example.test/')
 SUCCESS = SignResult('success', '签到成功')
 CHALLENGE = SignResult('failed', 'Cloudflare 验证', challenge='cloudflare')
@@ -77,7 +77,7 @@ class WhitelistRuntimeTests(unittest.TestCase):
     def test_direct_and_explicit_custom_rule_cannot_bypass_whitelist(self):
         engine, signer = self.engine(), self.signer()
         for rules in ({}, {'1': {'engine': 'browserless'}},
-                      {'tangpt.top': {'engine': 'browserless'}}):
+                      {'open.cd': {'engine': 'browserless'}}):
             with self.subTest(rules=rules), patch(NS + '.run_site_module', return_value=None):
                 row = engine._sign_one(SITE, rules, signer)
             self.assertEqual(row['status'], 'failed')

@@ -2580,11 +2580,15 @@ def load_site_modules(refresh: bool = False) -> List[Any]:
             name = (f"{__package__}.sites.{path.stem}" if __package__ else
                     "ptsitesignin_site_" + re.sub(r"\W+", "_", path.stem))
             try:
-                spec = importlib.util.spec_from_file_location(name, path)
-                if spec is None or spec.loader is None:
-                    continue
-                module = importlib.util.module_from_spec(spec)
-                spec.loader.exec_module(module)
+                if __package__:
+                    # 同一模块只保留一个身份；重新扫描不重建已导入模块的时钟和状态。
+                    module = importlib.import_module(name)
+                else:
+                    spec = importlib.util.spec_from_file_location(name, path)
+                    if spec is None or spec.loader is None:
+                        continue
+                    module = importlib.util.module_from_spec(spec)
+                    spec.loader.exec_module(module)
             except Exception:
                 continue
             for obj in vars(module).values():

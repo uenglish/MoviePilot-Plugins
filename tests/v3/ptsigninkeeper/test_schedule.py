@@ -24,6 +24,10 @@ class ScheduleTests(TestCase):
             ('.SitesHelper', SimpleNamespace(get_indexers=lambda: [self.site]))):
             item = patch(NS + target, return_value=value)
             item.start(); self.addCleanup(item.stop)
+        # 宿主 ModuleHelper 会重载适配器；调度测试只测任务派发，不能替换其他测试
+        # 已导入的类身份，否则后续网络替身会失效。
+        modules = patch(NS + '.ModuleHelper.load', return_value=[])
+        modules.start(); self.addCleanup(modules.stop)
         self.addCleanup(self.plugin.stop_service)
 
     def test_save_dispatches_real_one_shot_job_and_resets_flag(self):

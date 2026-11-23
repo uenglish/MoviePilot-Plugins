@@ -11,26 +11,15 @@ from typing import Any, Dict
 
 DEFAULT_RULES: Dict[str, Dict[str, Any]] = {
     # ---- 以下为需要浏览器交互的站点预设（来自 captchasignin 参考实现）----
-    # ---- 不可躺 / PlayLet：NexusPHP 签到页 ----
-    # 不可躺使用页内 Turnstile；PlayLet 使用图片验证码。
-    # 两者都通过 Browserless 在真实页面中完成验证后提交 attendance.php。
+    # 躺平新版是普通 POST 表单；先 GET 读取状态和隐藏字段，再提交一次并回读。
+    # 参考 PTSiteSignIn 3.1.13；PlayLet 等其他站点仍保留图片验证码规则。
     "tangpt.top": {
-        "engine": "browserless",
-        "mode": "cloudflare",
-        "path": "/attendance.php",
-        "preflight_path": "/attendance.php",
-        "submit_method": "auto",
-        "auto_wait": 30000,
-        "cloudflare_wait": 15,
-        "solve_count": 1,
-        "solve_timeout": 40000,
-        "wait": 15000,
-        "verify_success_path": "/attendance.php",
-        "verify_wait": 15000,
-        "success_keywords": ["签到成功", "簽到成功", "本次签到获得", "本次簽到獲得"],
-        "already_keywords": ["今天已经签到", "今日已签到", "已经签到", "今天已签到",
-                             "今日已簽到", "已經簽到"],
-        "pending_keywords": ["验证图片", "驗證圖片", "立即签到", "立即簽到"],
+        "engine": "http", "method": "GET", "path": "/attendance.php",
+        "submit_text": "立即签到", "auto_fallback": False,
+        "success_keywords": ["签到成功", "簽到成功"],
+        "already_keywords": ["签到已得", "今日已签到", "今天已签到", "已经签到",
+                             "已签到", "已簽到", "请不要重复签到"],
+        "strict_status_keywords": True,
     },
     "naturept.top": {
         # 自然：NexusPHP 图片验证码签到。站点模块优先；模块 OCR 不可用时回退 Browserless。
@@ -468,29 +457,10 @@ DEFAULT_RULES: Dict[str, Dict[str, Any]] = {
         "success_keywords": ["签到成功", "签到完成", "领取成功"],
         "already_keywords": ["签到已得", "今日已签到", "已经签到", "请不要重复签到"],
     },
-    # ---- SUNNYPT（sunnypt.top）：站点自带签到页 /user/attendance（Next.js + JSON API） ----
-    # 头像菜单里的「每日签到」只是跳这个页面，不用再点菜单；
-    # 已签到时页面上是「今日签到已完成 … 已连续签到 N 天」，按钮变灰的「今日已签到」。
+    # Sunny 新版通过 Cookie 换会话令牌；专用模块先查状态，再提交一次。
     "sunnypt.top": {
-        # 本机浏览器打开签到页：与手动操作同一 IP，避免站点侧异常校验
-        "engine": "playwright",
-        "method": "GET",
-        "path": "/user/attendance",
-        "submit_method": "dom_click",
-        "submit_selector": "button, [role='button'], a",
-        # 未签到时按钮是「立即签到」，已签到时是灰的「今日已签到」——用完整的四个字更精准
-        "submit_text": "立即签到",
-        # Cookie 失效时站点会 302 到 /auth/sign-in?shouldClearAuth=true：
-        # core 的 login_page() 已能识别，会直接报「Cookie 可能失效」而不是误报签到失败
-        # 站点是 Next.js + WebSocket 推状态：点完页面要等接口/推送回来才变成「今日签到已完成」，
-        # 所以多留一点时间再读快照（8 秒）
-        "wait": 8000,
-        # 不能用「点到就算成功」：已签到时按钮是灰的「今日已签到」，照样能被点到，
-        # 于是天天误报签到成功。这里改成看页面状态：
-        # 点之前就有「今日已签到」= 已签到（插件会先探一次，不会瞎点）；
-        # 点之后出现「今日签到已完成 / 已连续签到 N 天」= 本次签到成功。
-        "success_keywords": ["本次获得", "签到成功"],
-        "already_keywords": ["今日已签到", "今日签到已完成", "已连续签到", "已签到"],
+        "engine": "http", "method": "GET", "path": "/user/attendance",
+        "auto_fallback": False, "strict_status_keywords": True,
     },
     # ---- 海棠PT（htpt.cc）：/attendance.php 的「每日签到」日历，点按钮签到 ----
     # 已签到时页面直接写「今日已签到 ✓（连续 N 天，今日获得 X 魔力值）」，没有表单；
