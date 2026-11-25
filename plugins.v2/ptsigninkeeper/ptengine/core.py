@@ -681,14 +681,38 @@ def _is_transient(error: Exception) -> bool:
 
 
 def _quiz_already_result(content: str, rule: Mapping[str, Any]) -> Optional[SignResult]:
-    """识别 bakatest 的今日已签到状态。"""
-    if extract_quiz_form(content) or not has_account_evidence(content):
+    """只认独立的今日回执；bakatest 签到后仍可能保留可操作的答题表单。"""
+    if not has_account_evidence(content) or login_page(content):
         return None
     pattern = str(rule.get("already") or DEFAULT_ALREADY_PATTERN)
-    if not re.search(pattern, plain_text(content), re.IGNORECASE):
-        return None
-    bonus = extract_bonus(content, rule)
-    return SignResult("already", f"今日已签到（{bonus}）" if bonus else "今日已签到")
+    receipt = re.compile(
+        rf'(?:{pattern})(?:\s*[（(]已连续\s*\d+\s*天签到[）)])?'
+        rf'(?:\s*[，,；;。]\s*(?:本次(?:签到)?)?\s*(?:您|你)?\s*'
+        rf'(?:{BONUS_VERBS})\s*{BONUS_AMOUNT}\s*(?:{BONUS_COUNTERS})?\s*(?:{BONUS_UNITS}))?'
+        r'[。！!]*', re.IGNORECASE)
+    active_form = extract_quiz_form(content)
+    root = quiz_support.clean_tree(content)
+    for node in root.xpath('.//p|.//div|.//td'):
+        if node.xpath('ancestor::form|ancestor::header|ancestor::nav|ancestor::aside|'
+                      'ancestor::blockquote|.//form|.//table|.//input|.//a'):
+            continue
+        text = quiz_support.node_text(node)
+        if not receipt.fullmatch(text):
+            continue
+        if active_form:
+            # 现场页面的回执是答题表单旁的独立 table。表头状态、历史记录、
+            # 题目选项中的“已签到”不能越过仍在显示的表单。
+            tables = node.xpath('ancestor::table[1]')
+            if not tables or quiz_support.node_text(tables[0]) != text:
+                continue
+            parent = tables[0].getparent()
+            if parent is None or not parent.xpath(
+                    './form[.//input[@name="questionid"] and .//input[@name="choice[]"]]'):
+                continue
+        # 只从已确认的回执取奖励，避免把规则中的“不会用户获得5魔力值”当收益。
+        bonus = extract_bonus(text, rule)
+        return SignResult("already", f"今日已签到（{bonus}）" if bonus else "今日已签到")
+    return None
 
 
 def http_quiz_sign(session: Any, url: str, content: str, base_url: str,
@@ -708,7 +732,7 @@ def http_quiz_sign(session: Any, url: str, content: str, base_url: str,
         return SignResult("failed", f"未找到彩虹岛答题表单；{page_hint(content)}")
 
     # 答题页头部通常显示账户当前魔力值，不能把「N 点魔力值」当成签到成功；
-    # 只要表单还在，就必须先选题提交。
+    # 没有独立的今日回执时，仍需选题提交。
     try:
         answer, answer_mode = quiz_support.choose_text_quiz(rule, form)
         quiz_support.claim(rule)
@@ -746,8 +770,7 @@ def http_quiz_sign(session: Any, url: str, content: str, base_url: str,
         return SignResult("failed", "站点反馈答题未通过；本日不再自动提交，请在站内核对")
     verified_already = _quiz_already_result(verify_content, rule)
     if verified_already:
-        bonus = extract_bonus((result_content or "") + "\n" + (verify_content or ""), rule)
-        return SignResult("success", (f"签到成功（{bonus}）" if bonus else "签到成功") +
+        return SignResult("success", verified_already.message.replace("今日已签到", "签到成功", 1) +
                           ("；未配置可用 AI，沿用原有保底签到" if answer_mode == "legacy" else ""))
 
     if extract_quiz_form(verify_content):

@@ -194,7 +194,9 @@ DEFAULT_RULES: Dict[str, Dict[str, Any]] = {
         "success_keywords": ["已签到"],
         "browserless_retry": 2,
     },
-    "dstudio.me": {"engine": "browserless", "mode": "cloudflare", "path": "/attendance.php"},
+    # 普通签到回执可直接 HTTP 读取；需要验证时才按白名单回退到浏览器。
+    "dstudio.me": {"engine": "http", "method": "GET", "path": "/attendance.php",
+                   "local_browser_fallback": True},
     # ---- AGSVPT（agsvpt.com）：NexusPHP 签到页，页面上是一个「立即签到」表单提交按钮 ----
     # GET /attendance.php 只会把按钮渲染出来，不点按钮不会签到（实测未登录时 302 到
     # login.php?returnto=attendance.php），所以 HTTP 引擎必须用 POST；万一站点开了验证码 /

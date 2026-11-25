@@ -159,6 +159,18 @@ class WhitelistRuntimeTests(unittest.TestCase):
         signer.sign.assert_not_called()
         fetch.assert_not_called()
 
+    def test_dstudio_and_dolby_read_receipts_without_cloud_browser_configuration(self):
+        for host in ('dstudio.me', 'www.uhddolby.com'):
+            site = {**HTTP_SITE, 'url': 'https://' + host + '/'}
+            engine, signer = self.engine(), self.signer()
+            with self.subTest(host=host), patch(NS + '.run_site_module', return_value=None), \
+                 patch(NS + '.http_sign_auto', return_value=SUCCESS) as http, \
+                 patch.object(engine, 'read_header_reward', return_value=''):
+                row = engine._sign_one(site, {}, signer)
+            self.assertEqual((row['status'], row['engine']), ('success', 'http'))
+            http.assert_called_once()
+            signer.sign.assert_not_called()
+
     def test_api_key_challenge_obeys_whitelist_even_with_existing_pool(self):
         for allowed in ([], [1]):
             engine, signer = self.engine(allowed), self.signer()

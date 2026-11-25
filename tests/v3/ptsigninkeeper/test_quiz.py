@@ -19,6 +19,12 @@ FORM = '''<a href="logout.php">退出</a><aside>魔力值: 50000</aside>
 <label><input name="choice[]" type="radio" value="2">乙</label>
 <input type="submit" name="submit" value="提交"><input type="submit" name="wantskip" value="不会"></form>'''
 SIGNED = '<a href="logout.php">退出</a><div>今天已经签过到了</div><div>获得 10 魔力</div>'
+# Anonymous structure from the live bakatest page: the completed receipt and an
+# enabled quiz form coexist. Reward instructions are not the actual receipt.
+RETAINED_FORM_SIGNED = '''<table><tr><td id="outer">
+<div>不会用户,获得5魔力值；已退学用户签到,获得10魔力值</div>
+<table><tr><td><b><font color="red">今天已经签过到了(已连续3天签到)</font></b></td></tr></table>
+<h1>今日题目</h1>''' + FORM + '</td></tr></table>'
 U2_FORM = '''<a href="logout.php">退出</a><form action="showup.php" method="get"><input type="date" name="date"></form>
 <form action="showup.php?action=show"><input name="req" type="hidden" value="secret-req">
 <input name="hash" type="hidden" value="secret-hash"><input name="form" type="hidden" value="secret-form">
@@ -113,6 +119,44 @@ class QuizTests(unittest.TestCase):
     def test_active_form_wins_over_header_already(self):
         self.assertIsNone(core._quiz_already_result(FORM + SIGNED, self.rule()))
         self.assertIsNone(core._quiz_already_result(SIGNED.replace('logout.php', 'login.php'), self.rule()))
+
+    def test_live_completed_receipt_wins_over_retained_form_without_submitting(self):
+        session, claim = Mock(), Mock()
+        self.assertIsNotNone(core.extract_quiz_form(RETAINED_FORM_SIGNED))
+        result = core.http_quiz_sign(session, 'https://ptchdbits.co/bakatest.php', RETAINED_FORM_SIGNED,
+                                     'https://ptchdbits.co', self.rule(_quiz_claim=claim), 2, None)
+        self.assertEqual((result.status, result.message), ('already', '今日已签到'))
+        session.post.assert_not_called()
+        session.get.assert_not_called()
+        claim.assert_not_called()
+
+    def test_readback_with_retained_form_confirms_once_and_ignores_reward_instructions(self):
+        session = Mock()
+        session.post.return_value = SimpleNamespace(status_code=200, text=RETAINED_FORM_SIGNED)
+        session.get.return_value = SimpleNamespace(status_code=200, text=RETAINED_FORM_SIGNED)
+        result = core.http_quiz_sign(session, 'https://ptchdbits.co/bakatest.php', FORM,
+                                     'https://ptchdbits.co', self.rule(quiz_answer='2'), 2, None)
+        self.assertEqual((result.status, result.message), ('success', '签到成功'))
+        self.assertEqual(session.post.call_count, 1)
+        self.assertEqual(session.get.call_count, 1)
+
+    def test_quiz_receipt_rejects_hidden_instructions_history_and_option_text(self):
+        for page in (
+                '<template>' + RETAINED_FORM_SIGNED + '</template>',
+                '<div hidden>' + RETAINED_FORM_SIGNED + '</div>',
+                '<header>' + RETAINED_FORM_SIGNED + '</header>',
+                RETAINED_FORM_SIGNED.replace('今天已经签过到了', '签到后显示今天已经签过到了'),
+                RETAINED_FORM_SIGNED.replace('<tr><td><b>', '<tr><td>历史记录</td></tr><tr><td><b>'),
+                RETAINED_FORM_SIGNED.replace('logout.php', 'login.php'),
+                FORM.replace('哪个选项正确？', '今天已经签过到了'),
+        ):
+            with self.subTest(page=page):
+                self.assertIsNone(core._quiz_already_result(page, self.rule()))
+
+    def test_quiz_reward_only_comes_from_confirmed_receipt(self):
+        page = RETAINED_FORM_SIGNED.replace('已连续3天签到)', '已连续3天签到)，本次签到获得 6 魔力值')
+        result = core._quiz_already_result(page, self.rule())
+        self.assertEqual(result.message, '今日已签到（获得 6 魔力值）')
 
     def test_invalid_or_unavailable_ai_and_duplicate_do_not_post(self):
         for solver, claim in [(Mock(spec=[],return_value=['other']), None), (Mock(spec=[],return_value=['2','8']), None),

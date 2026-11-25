@@ -7,8 +7,11 @@ V3 优先使用 ``app.sdk.network.RequestUtils``；V2 使用宿主自带的
 
 from __future__ import annotations
 
+import inspect
+from http.cookies import SimpleCookie
 from types import SimpleNamespace
 from typing import Any, Iterator, Mapping
+from urllib.parse import urlsplit
 
 
 class _CookieSnapshot:
@@ -113,10 +116,15 @@ class _LegacySdkSession:
     V2 宿主接口，同时维护请求头和响应 Cookie 快照。
     """
 
-    def __init__(self, client: Any) -> None:
+    def __init__(self, client: Any, transport: Any = None) -> None:
         self._client = client
+        self._transport = transport
+        self._cookie_header = None
+        self._seeded_cookies: list[tuple[str, str]] = []
         self.headers: dict[str, str] = {}
         self._cookies: dict[str, str] = {}
+        if transport is not None:
+            transport.hooks['response'].append(self._accept_response_cookies)
         getter = getattr(client, "get_cookies", None)
         if callable(getter):
             try:
@@ -127,9 +135,70 @@ class _LegacySdkSession:
     @property
     def cookies(self) -> _CookieSnapshot:
         """返回当前持久会话的 Cookie 视图。"""
+        if self._transport is not None:
+            return _CookieSnapshot(self._transport.cookies.get_dict())
         return _CookieSnapshot(self._cookies)
 
+    def _prepare_cookies(self, url: str, headers: dict[str, str]) -> None:
+        """将初始 Cookie 放入 CookieJar，让响应更新、跳转和路径限制继续生效。"""
+        raw = None
+        for key in list(headers):
+            if key.lower() == 'cookie':
+                raw = headers.pop(key)
+        if raw is None or raw == self._cookie_header:
+            return
+        parsed = urlsplit(url)
+        if not parsed.hostname:
+            return
+        jar = self._transport.cookies
+        # 显式换用另一份登录 Cookie 时，旧会话和 CSRF 也必须一并失效。
+        if self._cookie_header is not None:
+            jar.clear()
+        self._seeded_cookies = []
+        for part in str(raw).split(';'):
+            name, separator, value = part.strip().partition('=')
+            if separator and name:
+                jar.set(name, value, domain=parsed.hostname, path='/', secure=parsed.scheme == 'https')
+                self._seeded_cookies.append((parsed.hostname, name))
+        # 同一原始 Cookie 只注入一次，不能覆盖站点轮换或删除后的值。
+        self._cookie_header = raw
+
+    def _accept_response_cookies(self, response: Any, **kwargs: Any) -> None:
+        """站点 Set-Cookie 接管同名初始值，避免 Domain 形式不同造成双重身份 Cookie。"""
+        request = response.request
+        target = urlsplit(request.url)
+        host = target.hostname or ''
+        source = getattr(getattr(response, 'raw', None), 'headers', None)
+        getter = getattr(source, 'getlist', None)
+        values = getter('Set-Cookie') if callable(getter) else [response.headers.get('Set-Cookie', '')]
+        for value in values:
+            incoming = SimpleCookie()
+            try:
+                incoming.load(value)
+            except Exception:
+                continue
+            for name, cookie in incoming.items():
+                domain = str(cookie['domain'] or host).lower().lstrip('.')
+                path = cookie['path'] or (target.path.rpartition('/')[0] or '/')
+                if path != '/' or not domain or not (host == domain or host.endswith('.' + domain)):
+                    continue
+                for seeded in list(self._seeded_cookies):
+                    seed_host, seed_name = seeded
+                    if name != seed_name or not (seed_host == domain or seed_host.endswith('.' + domain)):
+                        continue
+                    # requests 在响应钩子之后保存 Set-Cookie；同时清理已准备请求的
+                    # CookieJar，确保本次 302 的下一跳也不会重新合并旧值。
+                    for jar in (self._transport.cookies, getattr(request, '_cookies', None)):
+                        if jar is not None:
+                            try:
+                                jar.clear(domain=seed_host, path='/', name=seed_name)
+                            except KeyError:
+                                pass
+                    self._seeded_cookies.remove(seeded)
+
     def _remember_cookies(self, response: Any) -> None:
+        if self._transport is not None:
+            return  # requests.Session 已保留包括中间跳转在内的 CookieJar。
         cookies = getattr(response, "cookies", None)
         getter = getattr(cookies, "get_dict", None)
         if not callable(getter):
@@ -146,9 +215,11 @@ class _LegacySdkSession:
         extra = kwargs.pop("headers", None)
         if isinstance(extra, dict):
             headers.update({str(k): str(v) for k, v in extra.items()})
+        if self._transport is not None:
+            self._prepare_cookies(url, headers)
         if headers:
             kwargs["headers"] = headers
-        if self._cookies:
+        if self._transport is None and self._cookies:
             kwargs.setdefault("cookies", dict(self._cookies))
 
         method_upper = str(method or "GET").upper()
@@ -191,8 +262,30 @@ class _LegacySdkSession:
     def close(self) -> None:
         """释放 V2 RequestUtils 持有的会话。"""
         closer = getattr(self._client, "close", None)
-        if callable(closer):
-            closer()
+        try:
+            if callable(closer):
+                closer()
+        finally:
+            if self._transport is not None:
+                self._transport.close()
+
+
+def _legacy_session(request_utils: Any) -> _LegacySdkSession:
+    """V2 继续由宿主发送请求，同时显式提供其公开接口支持的持久会话。"""
+    try:
+        supports_session = 'session' in inspect.signature(request_utils).parameters
+    except (TypeError, ValueError):
+        supports_session = False
+    if not supports_session:
+        return _LegacySdkSession(request_utils())
+    import requests
+
+    transport = requests.Session()
+    try:
+        return _LegacySdkSession(request_utils(session=transport), transport)
+    except Exception:
+        transport.close()
+        raise
 
 
 def _request_utils_session(request_utils: Any) -> Any:
@@ -203,7 +296,7 @@ def _request_utils_session(request_utils: Any) -> Any:
         message = str(error)
         if "unexpected keyword argument" not in message or "use_session" not in message:
             raise
-        return _LegacySdkSession(request_utils())
+        return _legacy_session(request_utils)
     return _SdkSession(client)
 
 
@@ -225,5 +318,5 @@ def new_http_session() -> Any:
             import requests
 
             return requests.Session()
-        return _LegacySdkSession(LegacyRequestUtils())
+        return _legacy_session(LegacyRequestUtils)
     return _request_utils_session(RequestUtils)
