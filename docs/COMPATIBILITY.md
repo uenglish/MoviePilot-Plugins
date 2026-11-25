@@ -22,3 +22,24 @@ V2 运行文件由同一套 V3 功能源码生成，仅转换宿主导入路径�
 `scripts/test_v2.sh` 使用固定的官方 V2 镜像摘要，网络关闭、临时数据库、无生产目录挂载，运行共享业务测试和 V2 专用宿主测试。真实站点的访问结果仍取决于部署实例的网络、Cookie、站点规则与模型配置。
 
 宿主站点卡片中的上传下载统计由 MoviePilot 自身抓取。插件的签到适配不替换宿主的搜索、统计或图标规则；签到成功不代表宿主统计页面已经适配新域名。
+
+## 原生 JSON 仪表板试验
+
+两个插件均通过标准 `get_dashboard_meta()` 注册首页卡片，并在 `get_dashboard(key)` 返回布局、属性和非空 JSON 组件树：
+
+| 插件 | 仪表板 key | 刷新间隔 |
+| --- | --- | --- |
+| PT 签到管家 | `ptsigninkeeper_dashboard` | 300 秒 |
+| PT 邀请管家 | `ptinvitekeeper_dashboard` | 3600 秒 |
+
+JSON 使用 `div`、`strong`、`VAlert`、`VChip`、`VDivider` 和 `VSpacer`。统计覆盖全部记录，站点摘要最多 3 条。签到保留登录、无签到功能、U2 待开放和未确认的区别，奖励按站点展示；邀请区分未知名额与零值，并标出刷新失败保留的旧数据。打开和刷新仪表板只读取本地结果，不触发站点请求、任务或通知。
+
+网页端继续使用 Vue。签到卡片消费同一份 JSON；邀请卡片保留现有组件。完整页面、设置与侧栏继续使用原来的渲染模式。
+
+### MoviePilot for iOS 2.0.2 的限制
+
+已核对 [iOS 2.0.2 仪表板源码](https://github.com/jxxghp/MoviePilot-App/blob/v2.0.2/ios/MoviePilot/NativeV2/Pages/NativeDashboardPage.swift)：当接口返回 `render_mode == "vue"` 时，客户端直接显示远程 Vue 组件占位说明，即使 `elements` 已有原生 JSON 也不会使用。插件完整页面的 WebView 与首页卡片采用不同的加载路径。
+
+MoviePilot V2 2.15.6 和当前验证的 V3 宿主都从整个插件的 `get_render_mode()` 获取仪表板模式，`get_dashboard()` 没有单独覆盖该模式的返回字段。因此本次输出仍为 `render_mode: "vue"` 加非空 `elements`，**不能据此认定 iOS 2.0.2 首页显示问题已解决**。
+
+后续需要宿主提供独立的仪表板渲染模式，或客户端在 Vue 仪表板含有 JSON 时允许原生回退。不能直接把整个插件改成 `vuetify`，否则现有 Vue 页面与设置会受到影响。

@@ -13,7 +13,8 @@ export default defineConfig({
       "./Page": "./src/Page.vue",
       "./AppPage": "./src/AppPage.vue",
       "./AppPageSettings": "./src/SettingsPage.vue",
-      "./Config": "./src/Config.vue"
+      "./Config": "./src/Config.vue",
+      "./Dashboard": "./src/Dashboard.vue"
 },
     shared: { vue: { requiredVersion: false, generate: false, singleton: true } },
     format: 'esm',

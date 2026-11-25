@@ -2361,6 +2361,15 @@ class PTSignInKeeper(_PluginBase):
 
 
 
+    def get_dashboard_meta(self) -> Optional[List[Dict[str, str]]]:
+        return [{'key': 'ptsigninkeeper_dashboard', 'name': 'PT 签到管家'}]
+
+    def get_dashboard(self, key: str, **kwargs):
+        if key != 'ptsigninkeeper_dashboard':
+            return None
+        from .native_dashboard import render
+        return ({'cols': 12, 'md': 6}, {'refresh': 300, 'title': '签到与登录'}, render(self))
+
     @staticmethod
     def get_render_mode() -> Tuple[str, str]:
         return 'vue', 'dist/assets'

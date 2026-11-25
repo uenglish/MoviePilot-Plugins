@@ -740,7 +740,8 @@ class PTInviteKeeper(_PluginBase):
     def get_dashboard(self, key: str, **kwargs):
         if key != 'ptinvitekeeper_dashboard':
             return None
-        return ({'cols': 12, 'md': 6}, {'refresh': 3600, 'title': '邀请管理'}, [])
+        from .native_dashboard import render
+        return ({'cols': 12, 'md': 6}, {'refresh': 3600, 'title': '邀请管理'}, render(self))
 
 
     @staticmethod
