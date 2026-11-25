@@ -4,7 +4,7 @@
 
 | 插件 | 当前版本 | 发行说明 |
 | --- | --- | --- |
-| PT 签到管家 | 1.4.1 | [V2 会话与签到回执修复](releases/PTSignInKeeper_v1.4.1.md) |
+| PT 签到管家 | 1.4.2 | [杜比新域名任务遗漏修复](releases/PTSignInKeeper_v1.4.2.md) |
 | PT 邀请管家 | 1.4.0 | [页面与邀请通知重构](releases/v1.4.0.md) |
 
 新发行标签使用 `PTSignInKeeper_vX.Y.Z` 或 `PTInviteKeeper_vX.Y.Z`，每个发行包含对应插件的 V2/V3 ZIP 和 `SHA256SUMS`。市场仍按各插件索引中的版本检查更新。
