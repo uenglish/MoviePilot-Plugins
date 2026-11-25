@@ -169,7 +169,8 @@ class RunnerTests(unittest.TestCase):
     def setUp(self):
         self.plugin, self.memory = plugin_fixture()
         self.sites = [{'id': 1, 'name': '同名站'}, {'id': 2, 'name': '同名站'}]
-        self.helper = patch(NS + '.SitesHelper', return_value=SimpleNamespace(get_indexers=lambda: self.sites))
+        self.helper = patch(NS + '.SiteOper', return_value=SimpleNamespace(
+            list_order_by_pri=lambda: [SimpleNamespace(**site) for site in self.sites]))
         self.helper.start()
         self.addCleanup(self.helper.stop)
 

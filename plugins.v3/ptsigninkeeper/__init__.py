@@ -289,6 +289,7 @@ class PTSignInKeeper(_PluginBase):
             # Queued work must never switch to a newer configuration's bridge.
             if generation != self._generation:
                 return SiteResult(site.get("name"), f"{type_str}失败：配置已重载", False)
+            logger.info(f"开始站点{type_str}：{site.get('name')}（ID：{site.get('id')}）")
             if getattr(func, "__name__", "") in {"signin_site", "login_site"}:
                 return bridge.perform(self._normalize_site_info(site), type_str, self.__login_base)
             return func(site)
@@ -807,6 +808,29 @@ class PTSignInKeeper(_PluginBase):
         if custom_sites_config and custom_sites_config.get("enabled"):
             custom_sites = custom_sites_config.get("sites")
         return custom_sites
+
+    def _task_sites(self) -> Tuple[List[dict], set]:
+        """Use configured accounts, independently of the host's search-indexer rules.
+
+        SitesHelper omits domains absent from its resource bundle (including
+        uhddolby.com on V2). Sign-in has its own rules and must use the same
+        database as the site selector, retaining credentials and connection options.
+        """
+        fields = ('id', 'name', 'domain', 'url', 'cookie', 'ua', 'apikey', 'token',
+                  'proxy', 'render', 'public', 'note', 'timeout', 'is_active')
+        configured = [{key: getattr(site, key) for key in fields if hasattr(site, key)}
+                      for site in SiteOper().list_order_by_pri()]
+        builtin_ids = {site['id'] for site in configured if site.get('id') is not None}
+        seen = {str(sid) for sid in builtin_ids}
+        for site in self.__custom_sites() or []:
+            sid = site.get('id')
+            if sid is not None and str(sid) not in seen:
+                configured.append(dict(site))
+                seen.add(str(sid))
+        sites = [site for site in configured if site.get('id') is not None
+                 and str(site.get('is_active', True)).lower() not in ('false', '0')
+                 and str(site.get('public', False)).lower() not in ('true', '1')]
+        return sites, builtin_ids
 
     def _legacy_page(self) -> List[dict]:
         """
@@ -1784,12 +1808,11 @@ class PTSignInKeeper(_PluginBase):
         results = (today_history or {}).get("results") or {}
 
         # 查询所有站点
-        builtin_sites = [site for site in SitesHelper().get_indexers() if not site.get("public")]
-        builtin_site_ids = {site.get("id") for site in builtin_sites}
-        all_sites = builtin_sites + self.__custom_sites()
+        all_sites, builtin_site_ids = self._task_sites()
         # 过滤掉没有选中的站点
         if do_sites and self._ALL_SITES not in do_sites:
-            do_sites = [site for site in all_sites if site.get("id") in do_sites]
+            selected = {str(site_id) for site_id in do_sites}
+            do_sites = [site for site in all_sites if str(site.get("id")) in selected]
         else:
             do_sites = all_sites
 
@@ -2016,7 +2039,11 @@ class PTSignInKeeper(_PluginBase):
         """The domain API shares daily deduplication and returns actual sign-in success."""
         if apikey != settings.API_TOKEN:
             return schemas.Response(success=False, message="API密钥错误")
-        site = SitesHelper().get_indexer(StringUtils.get_url_domain(url))
+        from .ptengine.core import normalize_host
+        domain = normalize_host(url if '://' in url else 'https://' + url)
+        sites, _ = self._task_sites()
+        site = next((item for item in sites if domain and
+                     normalize_host(item.get('url') or '') == domain), None)
         if not site:
             return schemas.Response(success=False, message="站点不存在")
         if not self._enabled or not self._bridge:

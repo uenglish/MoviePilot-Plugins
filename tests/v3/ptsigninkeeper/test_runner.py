@@ -12,8 +12,8 @@ class ConsolidatedRunnerTests(unittest.TestCase):
     def setUp(self):
         self.plugin, self.memory = plugin_fixture()
         self.site = {'id': 1, 'name': '测试站'}
-        helper = patch(NS + '.SitesHelper', return_value=SimpleNamespace(
-            get_indexers=lambda: [self.site]))
+        helper = patch(NS + '.SiteOper', return_value=SimpleNamespace(
+            list_order_by_pri=lambda: [SimpleNamespace(**self.site)]))
         helper.start()
         self.addCleanup(helper.stop)
 

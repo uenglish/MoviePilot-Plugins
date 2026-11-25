@@ -19,11 +19,11 @@ class ScheduleTests(TestCase):
         self.config = {'enabled': True, 'onlyonce': True, 'notify': False, 'cron': '1 9 * * *',
                        'sign_sites': [1], 'login_sites': [], 'retry_time': '', 'retry_count': 0,
                        'consolidation_version': 1}
-        for target, value in (
-            ('.SiteOper', SimpleNamespace(list_order_by_pri=lambda: [SimpleNamespace(id=1)])),
-            ('.SitesHelper', SimpleNamespace(get_indexers=lambda: [self.site]))):
-            item = patch(NS + target, return_value=value)
-            item.start(); self.addCleanup(item.stop)
+        item = patch(NS + '.SiteOper', return_value=SimpleNamespace(
+            list_order_by_pri=lambda: [SimpleNamespace(**self.site)]))
+        item.start(); self.addCleanup(item.stop)
+        history_sites = patch(NS + '.SitesHelper', return_value=SimpleNamespace(get_indexers=lambda: []))
+        history_sites.start(); self.addCleanup(history_sites.stop)
         # 宿主 ModuleHelper 会重载适配器；调度测试只测任务派发，不能替换其他测试
         # 已导入的类身份，否则后续网络替身会失效。
         modules = patch(NS + '.ModuleHelper.load', return_value=[])
