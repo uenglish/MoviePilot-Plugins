@@ -1,6 +1,6 @@
 # PT 邀请管家
 
-作者及维护者：serendipity。版本：1.4.0。适用于 MoviePilot V2（>=2.15.6）和 V3（>=3.2.6）。
+作者及维护者：serendipity。版本：1.4.1。适用于 MoviePilot V2（>=2.15.6）和 V3（>=3.2.6）。
 
 PT 邀请资格、可用名额和成员状态管理。插件 ID 为 `PTInviteKeeper`，包名为 `ptinvitekeeper`，配置和数据使用独立命名空间。
 
