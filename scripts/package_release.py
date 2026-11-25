@@ -1,15 +1,22 @@
-"""Create deterministic independent plugin ZIPs for one repository release."""
+"""Create deterministic plugin ZIPs; a tag selects only its own V2/V3 pair."""
+import argparse
 from pathlib import Path
 import hashlib
 import json
 import zipfile
+from release_common import release_plugin
 
 ROOT = Path(__file__).resolve().parents[1]
-OUT = ROOT / 'output'
-OUT.mkdir(exist_ok=True)
+parser = argparse.ArgumentParser(description=__doc__)
+parser.add_argument('--tag', help='Independent plugin tag; omit to validate/package all plugins')
+args = parser.parse_args()
+selected = {release_plugin(ROOT, args.tag)[0]} if args.tag else None
+OUT = ROOT / 'output' / args.tag if args.tag else ROOT / 'output'
+OUT.mkdir(parents=True, exist_ok=True)
 checksums = []
 packages = [(platform, pid, meta) for platform in ('v3', 'v2')
-            for pid, meta in json.loads((ROOT / f'package.{platform}.json').read_text()).items()]
+            for pid, meta in json.loads((ROOT / f'package.{platform}.json').read_text()).items()
+            if selected is None or pid in selected]
 for platform, pid, meta in packages:
     folder = pid.lower()
     src = ROOT / f'plugins.{platform}' / folder

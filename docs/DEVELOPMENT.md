@@ -21,12 +21,23 @@ python3 scripts/package_release.py
 
 ## 发布
 
-两个插件使用相同版本。同步更新插件类的 `plugin_version`、`package.v3.json`、前端 package 与 lock 文件和说明文档，再生成 V2 目录和 `package.v2.json`，通过检查后创建 `vX.Y.Z` 标签。发布工作流生成一个 Release，包含四个 ZIP（两个插件分别提供 V2/V3 包）和 `SHA256SUMS`。
+两个插件独立维护版本。只更新本次有改动的插件类 `plugin_version`、`package.v3.json` 对应条目、该插件前端 package 与 lock 文件和说明文档，再生成 V2 目录和 `package.v2.json`。同一个插件的 V2/V3 版本须一致，两个插件之间无需一致。
+
+发行说明保存为 `docs/releases/<插件ID>_v<版本>.md`，并更新 `docs/RELEASE.md` 索引。检查通过后创建对应标签，例如 `PTSignInKeeper_v1.4.1` 或 `PTInviteKeeper_v1.4.1`。标签推送触发工作流，只打包和发布该插件的两个平台包及 `SHA256SUMS`。
+
+```sh
+python3 scripts/package_release.py --tag PTSignInKeeper_v1.4.1
+git tag -a PTSignInKeeper_v1.4.1 -m 'PT 签到管家 1.4.1'
+python3 scripts/publish_release.py --tag PTSignInKeeper_v1.4.1 --dry-run
+git push origin main PTSignInKeeper_v1.4.1
+```
+
+指定标签的产物位于 `output/<标签>/`，不同插件的校验清单互不覆盖；不指定 `--tag` 时生成全部插件的验证包。发布前检查标签与当前提交一致、目标插件版本一致以及附件哈希；已公开版本仅允许校验，不覆盖。测试工作流仍验证两款插件，防止共享构建流程造成回归。
 
 组件构建变化必须使用新的发布版本，不能覆盖已经发布的同版本入口，避免浏览器长期缓存旧 `remoteEntry.js` 后引用已移除的组件文件。
 
-市场索引使用源码安装模式，避免单个统一 Release 与宿主按插件 ID 查找标签的机制冲突。安装源码时也会获取已构建前端和图标。
+市场索引继续使用源码安装模式，安装时获取对应平台目录、已构建前端和图标。版本解耦不改变现有配置和数据命名空间。
 
-首版工作流支持明确指定 `consolidate_initial_history=true`：仅当版本为 v1.0.0 且提交只有一个无父提交时，删除本仓旧 PT 管家 Release。此开关仅用于仓库首次整理，默认关闭。
+历史统一标签与发行附件保留，不再提供删除历史发行记录的首版整理选项。
 
 提交使用 `<type>(<scope>): <中文摘要>`，只包含同一功能范围的修改。不要提交账号信息、Cookie、API Key、个人验收记录或生产配置。

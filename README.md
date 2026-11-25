@@ -19,7 +19,7 @@ https://github.com/uenglish/MoviePilot-Plugins
 
 市场中选择“PT 签到管家”和“PT 邀请管家”。首次启用前设置站点范围和执行计划。站点 Cookie / API Key 由 MoviePilot 站点管理提供，插件不附带账号信息。
 
-仓库仍只维护两个插件身份，使用统一版本和一个 Release，每个插件提供 V2、V3 两种安装包。文件名含 `mpv2` 的 ZIP 用于 V2，其余用于 V3。市场索引使用源码安装模式（`release: false`），源码目录包含预构建前端和图标。
+两个插件独立维护版本号和发行记录，更新其中一个不会要求另一个升级。每个插件的 Release 提供该插件的 V2、V3 安装包和 `SHA256SUMS`；标签分别使用 `PTSignInKeeper_vX.Y.Z`、`PTInviteKeeper_vX.Y.Z`。文件名含 `mpv2` 的 ZIP 用于 V2，其余用于 V3。市场索引使用源码安装模式（`release: false`），宿主按各插件版本检查更新，源码目录包含预构建前端和图标。历史统一发行版继续保留。
 
 V2 保留原生主题页面、“整理”分组入口、内嵌设置、分页与筛选。签到和邀请通知转换为 V2 支持的分段文本，AI 答题复用 V2 智能助手配置。未配置 AI 时继续使用站点原有方式。
 

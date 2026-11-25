@@ -9,7 +9,6 @@ IDS = ('PTSignInKeeper', 'PTInviteKeeper')
 index = json.loads((ROOT / 'package.v3.json').read_text())
 assert set(index) == set(IDS), 'Unexpected catalog entries'
 assert {p.name for p in (ROOT / 'plugins.v3').iterdir() if p.is_dir()} == {p.lower() for p in IDS}
-assert len({v['version'] for v in index.values()}) == 1, 'Unified release versions differ'
 for pid in IDS:
     meta = index[pid]
     root = ROOT / 'plugins.v3' / pid.lower()
@@ -19,7 +18,7 @@ for pid in IDS:
              for t in n.targets if isinstance(t, ast.Name) and t.id in ('plugin_version', 'plugin_author', 'plugin_icon')}
     assert attrs['plugin_version'] == meta['version'], pid
     assert attrs['plugin_author'] == meta['author'] == 'serendipity', pid
-    assert meta['release'] is False, 'Unified release uses source installation'
+    assert meta['release'] is False, 'Catalog uses source installation for both platforms'
     for name in ('package.json', 'package-lock.json'):
         front = json.loads((root / 'frontend' / name).read_text())
         assert front['version'] == meta['version'], (pid, name)

@@ -1,18 +1,12 @@
-name: Release PT plugins
+name: Release PT plugin
 on:
   push:
-    tags: ['v*']
+    tags: ['PTSignInKeeper_v*', 'PTInviteKeeper_v*']
   workflow_dispatch:
     inputs:
       tag:
-        description: '统一发布标签'
+        description: '插件标签：PTSignInKeeper_vX.Y.Z 或 PTInviteKeeper_vX.Y.Z'
         required: true
-        default: 'v1.0.0'
-      consolidate_initial_history:
-        description: '首版整理：删除旧 PT 管家发布记录（只允许一个初始提交的 v1.0.0）'
-        required: true
-        type: boolean
-        default: false
 permissions:
   contents: write
 concurrency:
@@ -22,6 +16,8 @@ jobs:
   release:
     runs-on: ubuntu-latest
     timeout-minutes: 25
+    env:
+      RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
     steps:
       - uses: actions/checkout@v7
         with:
@@ -37,15 +33,9 @@ jobs:
           python3 scripts/check_release.py
           python3 scripts/build_v2.py --check
           git diff --exit-code -- plugins.v3/*/dist plugins.v2
-          python3 scripts/package_release.py
+          python3 scripts/package_release.py --tag "$RELEASE_TAG"
       - name: Publish one release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
-          CONSOLIDATE_INITIAL: ${{ inputs.consolidate_initial_history || false }}
         run: |
-          args=(--tag "$RELEASE_TAG")
-          if [ "$CONSOLIDATE_INITIAL" = true ]; then
-            args+=(--consolidate-initial)
-          fi
-          python3 scripts/publish_release.py "${args[@]}"
+          python3 scripts/publish_release.py --tag "$RELEASE_TAG"

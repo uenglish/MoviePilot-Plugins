@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 root="$(cd "$(dirname "$0")/.." && pwd -P)"
+python3 -B -m unittest discover -s "$root/tests/release" -p 'test_*.py'
 for plugin in ptsigninkeeper ptinvitekeeper; do
   (cd "$root/plugins.v3/$plugin/frontend" && npm ci --ignore-scripts && npm test && npm run check && npm run build)
 done
