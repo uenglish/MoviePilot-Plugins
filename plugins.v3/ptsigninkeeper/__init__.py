@@ -89,7 +89,7 @@ class PTSignInKeeper(_PluginBase):
     # 插件图标
     plugin_icon = "../api/v1/plugin/file/PTSignInKeeper/assets/pt-signin-keeper-v1.webp"
     # 插件版本
-    plugin_version = "1.4.3"
+    plugin_version = "1.4.4"
     # 插件作者
     plugin_author = "serendipity"
     # 作者主页
