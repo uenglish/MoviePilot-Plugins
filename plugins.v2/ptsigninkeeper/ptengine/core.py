@@ -88,9 +88,11 @@ CLOUDFLARE_PATTERN = r"(just a moment|cf-chl-widget|cf_chl_opt|challenge-platfor
 # 雷池（SafeLine）WAF 的安全检测页：hdkyl.in、piggo.me 这类站点点签到后会先跳这里，
 # 由页面自己的 JS 跑几秒后自动放行，行为和 Cloudflare 交互挑战一样，只是文案不同。
 WAF_PATTERN = r"(正在进行安全检测|安全检测能力由|雷池\s*WAF|SafeLine)"
-# 站点要求「二级验证 / 异地登录验证」：猪猪（piggo.me）在非常用网络或新浏览器上会先出这一页，
-# 必须输入 2FA 动态码才能继续——插件没法自动完成，要明确提示而不是报「找不到签到按钮」。
-SECOND_FACTOR_PATTERN = r"(异地登录安全验证|異地登錄安全驗證|二级验证|二級驗證|两步验证|兩步驗證|忘记二级验证|忘記二級驗證|2FA)"
+# 导航中的“两步验证”和登录页的可选动态码都不表示会话被要求二次验证。
+SECOND_FACTOR_PROMPT = (r"异地登录安全验证|異地登錄安全驗證|"
+                        r"(?:请|請|需要|必须|必須)\s*(?:先)?(?:完成|输入|輸入|进行|進行)\s*"
+                        r"(?:(?:二[级級次]|[两兩]步|双重|雙重)(?:身份)?[验驗][证證]|"
+                        r"(?:动态|動態)(?:[验驗][证證])?[码碼]|2FA\b)")
 # Cloudflare「Just a moment...」交互挑战的专属特征：这类挑战会在真实浏览器里自动执行 JS
 # 并放行，只要留够等待时间即可，无需人工点击。注意不能用 challenge-platform /
 # cf-chl-widget 判断——正常的 Turnstile 组件页也会带这些标记；挑战放行后页面会换成新
@@ -187,6 +189,8 @@ class SignResult:
     # 仅 Browserless 首次预检被服务层拒绝时置 True；允许已适配的本地浏览器接手。
     # 提交阶段拒绝、超时或连接中断均不能证明站点未执行，保持 False。
     not_started: bool = False
+    # 当前响应明确要求登录或人工二次验证，不能切换引擎或继续提交签到表单。
+    auth_required: bool = False
 
 
 # ------------------------------------------------------------------ 公共工具
@@ -423,6 +427,11 @@ def preset_for_host(host: str) -> Optional[Dict[str, Any]]:
         if host.endswith("." + alias) and target_key in DEFAULT_RULES:
             return DEFAULT_RULES[target_key]
     return None
+
+
+def has_custom_rule(site: Mapping[str, Any], rules: Mapping[str, Any]) -> bool:
+    host = normalize_host(str(site.get("url") or ""))
+    return any(key in rules for key in (str(site.get("id")), host, "www." + host))
 
 
 def resolve_rule(site: Mapping[str, Any], custom_rules: Mapping[str, Mapping[str, Any]],
@@ -724,7 +733,7 @@ def http_quiz_sign(session: Any, url: str, content: str, base_url: str,
     if already:
         return already
     checked = judge_http(content, rule)
-    if checked.challenge:
+    if checked.auth_required or checked.challenge:
         return checked
     if login_page(content) or "Cookie 无效" in checked.message:
         return SignResult("failed", "Cookie 无效或已过期")
@@ -778,7 +787,7 @@ def http_quiz_sign(session: Any, url: str, content: str, base_url: str,
                           "答题已提交但站点仍显示题目，结果未确认；本日不再自动提交")
 
     verified = judge_http(verify_content, rule)
-    if verified.challenge:
+    if verified.auth_required or verified.challenge:
         return verified
     if login_page(verify_content) or "Cookie 无效" in verified.message:
         return SignResult("failed", "Cookie 无效或已过期")
@@ -1010,6 +1019,9 @@ def http_sign_form(site: Mapping[str, Any], rule: Mapping[str, Any], timeout: in
         page = session.get(page_url, timeout=timeout, allow_redirects=True, proxies=proxies)
         if page.status_code >= 400:
             return None
+        auth = auth_page_result(page.text or "")
+        if auth:
+            return auth
         form = find_signin_form(page.text or "", base_url, str(rule.get("submit_text") or ""))
         if not form or form["method"] != "POST":
             return None
@@ -1130,6 +1142,9 @@ def http_two_step(site: Mapping[str, Any], rule: Mapping[str, Any], timeout: int
     first = fetch_page(first_url, cookie, timeout, proxies, ua)
     if not first:
         return None
+    auth = auth_page_result(first)
+    if auth:
+        return auth
 
     data: Dict[str, str] = {}
     static = rule.get("signin_data")
@@ -1183,6 +1198,8 @@ def http_two_step(site: Mapping[str, Any], rule: Mapping[str, Any], timeout: int
     if rule.get("signin_absent_status"):
         probe["absent_status"] = rule["signin_absent_status"]
     judged = judge_http(response.text or "", probe)
+    if judged.auth_required:
+        return judged
     if judged.status in {"success", "already"}:
         return SignResult(judged.status, f"{judged.message}；签到入口 {signin_path}")
     # 答题式签到（52PT / CHDBits / U2）：答错不算签到成功，换一个选项再来，最多试 3 次
@@ -2313,6 +2330,9 @@ def playwright_sign(site: Mapping[str, Any], rule: Mapping[str, Any], timeout: i
                         "path": path, "stuck": stuck}
                 continue
 
+            auth = auth_page_result(before)
+            if auth:
+                return {"before": before, "after": before, "clicked": False, "result": auth}
             state_before = control_state(page)
             state_before_result = control_result(state_before, False)
             if state_before_result is not None:
@@ -2332,11 +2352,6 @@ def playwright_sign(site: Mapping[str, Any], rule: Mapping[str, Any], timeout: i
             judged_before = (judge_browser_page(before)
                              if not state_before_result or not state_before.get("found")
                              else SignResult("failed", ""))
-            if judged_before.status == "failed" and "二级验证" in str(judged_before.message or ""):
-                # 异地登录验证页：需要人工/2FA，点按钮没用
-                return {"before": before, "after": before, "clicked": False,
-                        "path": path, "stuck": "second_factor",
-                        "message": judged_before.message}
             loop_state: Dict[str, Any] = {}
             loop_result: Optional[SignResult] = None
             last_captcha_failure: Optional[SignResult] = None
@@ -2447,6 +2462,9 @@ def playwright_sign(site: Mapping[str, Any], rule: Mapping[str, Any], timeout: i
                             after = page.content() or after
                         except Exception:
                             pass
+                    auth = auth_page_result(after)
+                    if auth:
+                        return {"before": before, "after": after, "clicked": clicked, "result": auth}
                     state_after = control_state(page)
                     state_after_result = control_result(state_after, clicked)
                     if state_after_result is not None:
@@ -2518,6 +2536,8 @@ def playwright_sign(site: Mapping[str, Any], rule: Mapping[str, Any], timeout: i
     judged = outcome.get("result")
     if not isinstance(judged, SignResult):
         judged = judge_browser_page(after)
+    if judged.auth_required:
+        return judged
     if judged.status in {"success", "already"}:
         prefix = "" if outcome.get("clicked") else "（页面已是签到完成状态）"
         return SignResult(judged.status, f"{judged.message}{prefix}")
@@ -2531,9 +2551,6 @@ def playwright_sign(site: Mapping[str, Any], rule: Mapping[str, Any], timeout: i
             return SignResult("failed", str(outcome.get("message")
                                             or judged.message
                                             or "浏览器内登录或页面解锁未完成"))
-        if outcome.get("stuck") == "second_factor":
-            return SignResult("failed", str(outcome.get("message")
-                                            or "站点要求二级验证（异地登录验证）"))
         tried = "、".join(str(item) for item in (outcome.get("tried") or []))
         ready = outcome.get("ready") if isinstance(outcome.get("ready"), Mapping) else {}
         if (rule.get("playwright_calendar_selector")
@@ -2704,7 +2721,7 @@ def http_sign_auto(site: Mapping[str, Any], rule: Mapping[str, Any], timeout: in
         # 彩虹岛答题只允许一条确定路径：POST 后 GET 回读确认。失败时不能
         # 再走二次提交、首页猜链接或 Browserless，否则会在答题结果未知时重复签到。
         return result
-    if result.status in {"success", "already"}:
+    if result.auth_required or result.status in {"success", "already"}:
         return result
     # 页面能打开但没判定出结果：很多站点签到是「点表单按钮」触发的，
     # 这里按页面上的表单 POST 一次，再回读签到页确认，避免「签上了却报失败」。
@@ -2717,12 +2734,18 @@ def http_sign_auto(site: Mapping[str, Any], rule: Mapping[str, Any], timeout: in
         if str(rule.get("signin_path") or "").strip():
             time.sleep(1.5)
             confirmed = http_confirm(site, rule, timeout=timeout, proxies=proxies)
+            if confirmed is not None and confirmed.auth_required:
+                return confirmed
             if confirmed is not None and confirmed.status in {"success", "already"}:
                 return SignResult(confirmed.status, f"{confirmed.message}（回读签到页确认）")
         posted = http_sign_form(site, rule, timeout=timeout, proxies=proxies)
+        if posted is not None and posted.auth_required:
+            return posted
         if posted is not None and posted.status in {"success", "already"}:
             return SignResult(posted.status, f"{posted.message}（按页面表单 POST 提交）")
         confirmed = http_confirm(site, rule, timeout=timeout, proxies=proxies)
+        if confirmed is not None and confirmed.auth_required:
+            return confirmed
         if confirmed is not None and confirmed.status in {"success", "already"}:
             return SignResult(confirmed.status, f"{confirmed.message}（回读签到页确认）")
         if posted is not None and posted.status == "failed":
@@ -3016,12 +3039,15 @@ def _json_sign_result(content: str, rule: Mapping[str, Any]) -> Optional[SignRes
 def judge_http(content: str, rule: Mapping[str, Any]) -> SignResult:
     # 完整页面匹配：Audiences 等站的判定文案位于页面较后位置，按 20000 字符截断会漏掉
     text = content[:200000]
+    auth = auth_page_result(content)
+    if auth:
+        return auth
     if re.search(CLOUDFLARE_PATTERN, text, re.IGNORECASE):
         return SignResult("failed", "站点返回 Cloudflare 验证页", challenge="cloudflare")
     if re.search(WAF_PATTERN, text, re.IGNORECASE):
         return SignResult("failed", "站点返回雷池 WAF 安全检测页", challenge="cloudflare")
     if re.search(COOKIE_INVALID_PATTERN, text, re.IGNORECASE) and "logout" not in text.lower():
-        return SignResult("failed", "Cookie 无效或已过期")
+        return SignResult("failed", "Cookie 无效或已过期", auth_required=True)
     structured = _json_sign_result(text, rule)
     if structured is not None:
         return structured
@@ -4577,6 +4603,30 @@ def control_text(html: str) -> str:
     return re.sub(r"\s+", " ", plain_text(" ".join(parts)))
 
 
+def auth_page_result(html: str) -> Optional[SignResult]:
+    """只识别可见的账号密码表单、独立动态码输入框或明确的二次验证要求。"""
+    if not re.search(r"password|one-time-code|otp|2fa|二[级級次]|[两兩]步|双重|雙重|" + SECOND_FACTOR_PROMPT,
+                     html or "", re.I):
+        return None
+    markup = visible_markup(html)
+    login = find_login_form(markup)
+    if any(field.lower() in {"username", "email", "user", "account"} for field in login["fields"]):
+        return SignResult("failed", "签到页要求重新登录，请在 MoviePilot 所在网络检查站点 Cookie 和登录会话",
+                          auth_required=True)
+    prompt = re.sub(r"<a\b[^>]*>.*?</a\s*>", " ", markup, flags=re.I | re.S)
+    otp = any(
+        field.get("autocomplete", "").lower() == "one-time-code"
+        or field.get("name", "").lower() in {"otp", "totp", "2fa", "otp_code", "totp_code"}
+        for field in map(_tag_attrs, _INPUT_RE.findall(markup))
+    )
+    heading = re.search(r"<(h[1-3]|legend)\b[^>]*>\s*(?:二[级級次]|[两兩]步|双重|雙重)"
+                        r"(?:身份)?[验驗][证證]\s*</\1>", prompt, re.I)
+    if otp or (heading and _INPUT_RE.search(prompt)) or re.search(SECOND_FACTOR_PROMPT, plain_text(prompt), re.I):
+        return SignResult("failed", "站点要求二级验证，请在 MoviePilot 所在网络打开站点并完成验证",
+                          auth_required=True)
+    return None
+
+
 def login_page(html: str) -> bool:
     """页面是否就是站点登录页。
 
@@ -4950,12 +5000,11 @@ def classify(html: str, rule: Mapping[str, Any]) -> SignResult:
     structured = _json_sign_result(html, rule)
     if structured is not None:
         return structured
+    auth = auth_page_result(html)
+    if auth:
+        return auth
     full_text = page_text(html)
     lower = full_text.lower()
-    if re.search(SECOND_FACTOR_PATTERN, full_text, re.IGNORECASE):
-        return SignResult("failed",
-                          "站点要求二级验证（异地登录验证）：请在常用网络下打开站点完成一次验证，"
-                          "或换一份完整的 Cookie（含 cf_clearance / 会话）再试")
     if any(word.lower() in lower for word in LOGIN_WORDS) and "logout" not in lower:
         return SignResult("failed", "Cookie 无效或已过期")
     rejection = signin_rejection(html)
@@ -5699,10 +5748,12 @@ class BrowserlessSigner:
                     "Browserless 签到页预检返回空导航状态，请重试或更换 Browserless 节点",
                 )
             # goto 缺失但已经拿到非空 HTML 时继续按页面内容判定，避免误伤部分响应。
+            initial = classify(preflight_html, rule)
+            if initial.auth_required:
+                return initial
             if login_page(preflight_html):
                 # 预检就已经被踢到登录页：Cookie 失效时怎么验人机验证都没用，直接给结论
                 return SignResult("failed", login_required_message("签到页跳转到了登录页"))
-            initial = classify(preflight_html, rule)
             if initial.status in {"already", "success"}:
                 return initial
             pre_state_pending = bool(first_keyword(page_text(preflight_html),

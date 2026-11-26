@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 import sys
 import unittest
+from unittest.mock import Mock, patch
 
 try:
     from app.plugins.ptsigninkeeper.ptengine import core
@@ -16,6 +17,43 @@ except ModuleNotFoundError:
 
 
 class ReceiptTests(unittest.TestCase):
+    login_form = ('<form action="takelogin.php"><input name="username"><input type="password" name="password">'
+                  '<label>两步验证码 <input name="2fa"></label><input name="imagestring">'
+                  '<a href="recover.php">丢失了两步验证码？</a><button>登录</button></form>')
+
+    def test_dolby_login_form_and_independent_otp_require_different_actions(self):
+        otp = '<a href="/logout.php">退出</a><form>请输入两步验证码<input name="otp"></form>'
+        for judge in (core.classify, core.judge_http):
+            for page, expected in [(self.login_form, '重新登录'), (otp, '二级验证')]:
+                with self.subTest(judge=judge.__name__, expected=expected):
+                    result = judge(page + '<p>签到成功</p>', {})
+                    self.assertTrue(result.auth_required)
+                    self.assertEqual(result.status, 'failed')
+                    self.assertIn(expected, result.message)
+                    self.assertEqual(result.challenge, '')
+
+    def test_account_security_navigation_and_hidden_form_do_not_mask_receipt(self):
+        page = ('<a href="2fa.php">两步验证</a><a href="/help">如何完成异地登录安全验证</a>'
+                '<a href="/logout.php">退出</a><template>' + self.login_form + '</template><p>今日已签到</p>')
+        for judge in (core.classify, core.judge_http):
+            self.assertEqual(judge(page, {}).status, 'already')
+
+    def test_login_page_stops_http_fallback_and_browser_clicks(self):
+        site = {'url': 'https://www.uhddolby.com/', 'cookie': 'sid=fixture'}
+        rule = core.resolve_rule(site, {})
+        session = Mock(headers={})
+        session.get.return_value = Mock(status_code=200, text=self.login_form)
+        with patch.object(core, 'new_http_session', return_value=session):
+            self.assertTrue(core.http_sign_auto(site, rule).auth_required)
+        session.get.assert_called_once()
+        session.post.assert_not_called()
+        page = Mock()
+        page.content.return_value = self.login_form
+        with patch.object(core, 'playwright_available', return_value=True), \
+             patch.object(core, '_run_browser_callback', side_effect=lambda cb, **kwargs: cb(page)):
+            self.assertTrue(core.playwright_sign(site, rule).auth_required)
+        page.click.assert_not_called()
+
     def test_possible_and_hidden_success_are_not_receipts(self):
         for markup in (
             '<script>if (ok) { alert("签到成功"); }</script>',

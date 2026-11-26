@@ -29,7 +29,9 @@ from app.helper.ocr import OcrHelper
 from app.log import logger
 from app.utils.http import RequestUtils
 from app.utils.site import SiteUtils
-from ..ptengine.core import classify, extract_bonus, plain_text, visible_markup
+from ..ptengine.core import (auth_page_result, classify, extract_bonus, has_account_evidence,
+                             plain_text, signin_rejection, visible_markup)
+from ..ptengine.http import new_http_session
 
 
 class NexusPhpAttendance:
@@ -43,6 +45,13 @@ class NexusPhpAttendance:
         'already_keywords': ['已签到', '已簽到', '已经签到', '已經簽到',
                              'Already attendance', 'You have already attend'],
     }
+    _personal_record = re.compile(
+        r'[这這]是您的第\s*\d+\s*次[签簽]到[，,\s]+已[连連][续續][签簽]到\s*\d+\s*天'
+        r'[，,\s]+本次[签簽]到[获獲]得\s*[\d,.]+\s*(?:[个個点點]\s*)?(?:憨豆|魔力值)|'
+        r'(?P<already>(?:您|你)(?:今天|今日)(?:已[经經]?)?[签簽](?:到[过過]|[过過]到)了|'
+        r'You have already attend, no refresh please\.)|'
+        r'You have already attended \d+ days, Continuous \d+ days, this time you will get (?P<bonus>\d+) bonus\.',
+        re.I)
 
     # Cookie 已失效
     _login_patterns = (
@@ -456,24 +465,68 @@ class NexusPhpAttendance:
             except Exception as err:
                 logger.debug(f"{site_info.get('name')} 关闭浏览器失败：{str(err)}")
 
+    @staticmethod
+    def _read_receipt_page(url, site_info):
+        session = new_http_session()
+        try:
+            cookie = re.sub(r"[\r\n\t]+", "", site_info.get("cookie") or "")
+            session.headers.update({'Cookie': cookie, 'Accept': 'text/html'})
+            if site_info.get('ua'):
+                session.headers['User-Agent'] = site_info['ua']
+            response = session.get(url, timeout=site_info.get('timeout') or 20,
+                                   proxies=settings.PROXY if site_info.get('proxy') else None)
+            return (response.status_code, response.text or '') if response is not None else (None, '')
+        finally:
+            session.close()
+
     @classmethod
-    def ordinary_receipt(cls, site_info, action='签到'):
+    def _personal_receipt(cls, html, url):
+        """只从当前用户的回执段落取奖励，排除日历历史、说明文字和待提交表单。"""
+        if not has_account_evidence(html):
+            return False, '签到页未确认登录状态'
+        if cls.parse_form(html, url):
+            return False, '站点要求手动提交签到表单，请在站点内完成'
+        reason = signin_rejection(html)
+        if reason:
+            return False, reason
+        tree = etree.HTML(visible_markup(html))
+        for node in tree.xpath('//*[self::p or (self::td or self::div) and not(*)][not(ancestor::blockquote)]'):
+            text = ' '.join(' '.join(node.itertext()).split())
+            match = cls._personal_record.match(text)
+            if match:
+                if match.group('bonus'):
+                    return True, f"今日已签到，获得 {match.group('bonus')} bonus"
+                if match.group('already'):
+                    return True, '今日已签到'
+                return True, cls.signed_message(match.group())
+        return False, '站点未返回可确认的当日签到回执'
+
+    @classmethod
+    def ordinary_receipt(cls, site_info, action='签到', *, personal_receipt=False):
         """Use the site's normal GET with the configured session. Stop on human verification."""
         if not site_info.get('url') or not site_info.get('cookie'):
             return False, '未配置站点地址或 Cookie'
         url = cls.attendance_url(site_info) if action == '签到' else site_info['url']
-        status, html = cls.request_html(url=url, site_info=site_info)
+        try:
+            read = cls._read_receipt_page if personal_receipt else cls.request_html
+            status, html = read(url, site_info)
+        except Exception as error:
+            return False, f'读取站点页面失败（{type(error).__name__}）'
         if cls.is_challenge(status, html) or cls.is_turnstile(html):
             return False, '站点需要人工验证，请在站点内完成'
         if status == 404 and action == '签到':
             return False, '签到入口暂不可用（HTTP 404），可能暂时关闭或地址变更，后续任务会重新检查'
         if status != 200 or not html:
             return False, f'站点未返回正常页面（HTTP {status or "无响应"}）'
+        if action == '签到' and (auth := auth_page_result(html)):
+            return False, auth.message
         if cls.is_login_page(html) and not SiteUtils.is_logged_in(html):
             return False, '请重新登录站点并更新 Cookie'
         if action == '登录':
             from ..result import has_login_evidence
             return (True, '登录成功（首页已验证）') if has_login_evidence(html) else (False, '未确认登录状态')
+        if personal_receipt:
+            return cls._personal_receipt(html, url)
         receipt = cls.signed_message(html)
         if receipt:
             return True, receipt

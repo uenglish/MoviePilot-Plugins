@@ -8,6 +8,26 @@ from app.plugins.ptsigninkeeper.result import SiteResult
 
 
 class BridgeSafetyTests(unittest.TestCase):
+    def test_homepage_login_reports_transport_cause_without_request_url(self):
+        from requests import exceptions
+        from app.plugins.ptsigninkeeper import PTSignInKeeper
+        site = {'id': 45, 'name': '幼儿园', 'url': 'https://u2.dmhy.org/', 'cookie': 'test=only', 'timeout': 5}
+        bridge = self.bridge()
+        login = PTSignInKeeper._PTSignInKeeper__login_base
+        with patch('app.plugins.ptsigninkeeper.RequestUtils') as request:
+            get = request.return_value.get_res
+            for error, expected in [(exceptions.ReadTimeout, '超时设置 5 秒'), (exceptions.SSLError, 'TLS'),
+                                    (exceptions.ProxyError, '代理'), (exceptions.ConnectionError, '连接失败'),
+                                    (None, '未收到 HTTP 响应')]:
+                with self.subTest(error=error):
+                    get.side_effect = error('private-url') if error else None
+                    get.return_value = None
+                    result = bridge.perform(site, '登录', login)
+                    self.assertFalse(result.logged_in)
+                    self.assertIn(expected, result.message)
+                    self.assertNotIn('private-url', result.message)
+                    self.assertTrue(get.call_args.kwargs['raise_exception'])
+
     def test_yema_routes_to_current_adapter_and_respects_user_rule(self):
         from app.plugins.ptsigninkeeper.sites.yema import YemaPT
         bridge = self.bridge()

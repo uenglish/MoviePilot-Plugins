@@ -54,6 +54,7 @@ from .core import (
     fetch_page,
     http_check_api_key,
     generic_api_key_rule,
+    has_custom_rule,
     http_sign_auto,
     is_api_key_rule,
     playwright_sign,
@@ -233,7 +234,7 @@ class RuleEngine:
             if engine == "playwright":
                 outcome = playwright_sign(info, rule, timeout=max(90, self._timeout * 2),
                                           proxies=self._proxies_for(info))
-                if outcome is not None and outcome.status in {"success", "already"}:
+                if outcome is not None and (outcome.auth_required or outcome.status in {"success", "already"}):
                     return outcome
                 # 本机成功时绝不消耗 Browserless 额度；只有浏览器助手缺失或本机流程失败，
                 # 且规则允许时才回退。
@@ -530,7 +531,23 @@ class RuleEngine:
                 outcome = self._sign_with_engine(playwright_info, rule, engine, signer, site_name)
                 engine = "playwright"
             elif engine == "browserless":
-                outcome = self._sign_browserless(info, rule, signer)
+                blocked = self._browserless_block_reason(info)
+                host = normalize_host(str(info.get("url") or ""))
+                if (blocked and self._is_run_current(run_id) and not has_custom_rule(info, rules)
+                        and host in {"hhanclub.net", "ptsbao.club", "hdkyl.in"}):
+                    from ..sites.nexusphp_attendance import NexusPhpAttendance
+                    engine = "http"
+                    ok, message = NexusPhpAttendance.ordinary_receipt(info, personal_receipt=True)
+                    if ok:
+                        outcome = SignResult("already" if message.startswith("今日已签到") else "success", message)
+                    else:
+                        outcome = SignResult("failed", f"{message}；{blocked}")
+                else:
+                    outcome = self._sign_browserless(info, rule, signer)
+            elif (normalize_host(str(info.get("url") or "")) in {"haidan.cc", "haidan.video"}
+                  and not has_custom_rule(info, rules)):
+                from .haidan import sign_in
+                outcome = sign_in(info, rule, self._timeout, self._proxies_for(info))
             else:
                 outcome = http_sign_auto(info, rule, timeout=self._timeout,
                                          proxies=self._proxies_for(info))
@@ -786,7 +803,7 @@ class RuleEngine:
         后者常见于只能靠浏览器点击的站点，未写规则的站点也给它一次机会。
         404（找不到签到入口）、Cookie 失效这类重试没用，不折腾。
         """
-        if is_api_key_rule(rule):
+        if outcome.auth_required or is_api_key_rule(rule):
             return False
         if str(rule.get("form_mode") or "").lower() == "quiz":
             # quiz 的提交结果只能靠回读确认；重试或换引擎会重复提交，必须禁用。

@@ -108,44 +108,26 @@ class _SdkSession:
             closer()
 
 
-class _LegacySdkSession:
-    """MoviePilot V2 的 RequestUtils 兼容包装。
+class SiteSessionCookies:
+    """将站点配置的 Cookie 注入一次，后续身份、过期及路径由响应的 CookieJar 接管。"""
 
-    V2 的 ``RequestUtils`` 主要提供 ``get_res`` / ``post_res``，不一定支持
-    ``request(raise_exception=...)``。这里把插件统一使用的 requests 风格接口转换成
-    V2 宿主接口，同时维护请求头和响应 Cookie 快照。
-    """
-
-    def __init__(self, client: Any, transport: Any = None) -> None:
-        self._client = client
+    def __init__(self, transport):
         self._transport = transport
         self._cookie_header = None
         self._seeded_cookies: list[tuple[str, str]] = []
-        self.headers: dict[str, str] = {}
-        self._cookies: dict[str, str] = {}
-        if transport is not None:
-            transport.hooks['response'].append(self._accept_response_cookies)
-        getter = getattr(client, "get_cookies", None)
-        if callable(getter):
-            try:
-                self._cookies.update({str(k): str(v) for k, v in getter().items()})
-            except Exception:
-                pass
+        transport.hooks['response'].append(self._accept_response_cookies)
 
-    @property
-    def cookies(self) -> _CookieSnapshot:
-        """返回当前持久会话的 Cookie 视图。"""
-        if self._transport is not None:
-            return _CookieSnapshot(self._transport.cookies.get_dict())
-        return _CookieSnapshot(self._cookies)
-
-    def _prepare_cookies(self, url: str, headers: dict[str, str]) -> None:
+    def prepare(self, url: str, headers: dict[str, str]) -> None:
         """将初始 Cookie 放入 CookieJar，让响应更新、跳转和路径限制继续生效。"""
         raw = None
         for key in list(headers):
             if key.lower() == 'cookie':
                 raw = headers.pop(key)
-        if raw is None or raw == self._cookie_header:
+        if raw is not None:
+            self.seed(url, raw)
+
+    def seed(self, url: str, raw: str) -> None:
+        if raw == self._cookie_header:
             return
         parsed = urlsplit(url)
         if not parsed.hostname:
@@ -196,6 +178,35 @@ class _LegacySdkSession:
                                 pass
                     self._seeded_cookies.remove(seeded)
 
+
+class _LegacySdkSession:
+    """MoviePilot V2 的 RequestUtils 兼容包装。
+
+    V2 的 ``RequestUtils`` 主要提供 ``get_res`` / ``post_res``，不一定支持
+    ``request(raise_exception=...)``。这里把插件统一使用的 requests 风格接口转换成
+    V2 宿主接口，同时维护请求头和响应 Cookie 快照。
+    """
+
+    def __init__(self, client: Any, transport: Any = None) -> None:
+        self._client = client
+        self._transport = transport
+        self._site_cookies = SiteSessionCookies(transport) if transport is not None else None
+        self.headers: dict[str, str] = {}
+        self._cookies: dict[str, str] = {}
+        getter = getattr(client, "get_cookies", None)
+        if callable(getter):
+            try:
+                self._cookies.update({str(k): str(v) for k, v in getter().items()})
+            except Exception:
+                pass
+
+    @property
+    def cookies(self) -> _CookieSnapshot:
+        """返回当前持久会话的 Cookie 视图。"""
+        if self._transport is not None:
+            return _CookieSnapshot(self._transport.cookies.get_dict())
+        return _CookieSnapshot(self._cookies)
+
     def _remember_cookies(self, response: Any) -> None:
         if self._transport is not None:
             return  # requests.Session 已保留包括中间跳转在内的 CookieJar。
@@ -215,8 +226,8 @@ class _LegacySdkSession:
         extra = kwargs.pop("headers", None)
         if isinstance(extra, dict):
             headers.update({str(k): str(v) for k, v in extra.items()})
-        if self._transport is not None:
-            self._prepare_cookies(url, headers)
+        if self._site_cookies is not None:
+            self._site_cookies.prepare(url, headers)
         if headers:
             kwargs["headers"] = headers
         if self._transport is None and self._cookies:

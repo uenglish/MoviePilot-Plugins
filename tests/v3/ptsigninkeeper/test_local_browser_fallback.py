@@ -77,6 +77,48 @@ class LocalReceiptTests(unittest.TestCase):
 
 
 class LocalFallbackTests(unittest.TestCase):
+    def test_unlisted_nexus_sites_read_current_personal_receipt(self):
+        for host, amount, unit in [('hhanclub.net', 50, '憨豆'), ('ptsbao.club', 50, '魔力值'),
+                                   ('www.hdkyl.in', 170, '魔力值')]:
+            site = {**SITE, 'url': f'https://{host}/'}
+            html = (f'<aside>连续签到可获得 1000 憨豆</aside><a href="logout.php">退出</a>'
+                    f'<p>这是您的第 <b>87</b> 次签到，已连续签到 9 天，本次签到获得 {amount} 个{unit}。</p>')
+            bridge = SignInBridge({'browserless_sites': [], 'read_activity': False})
+            bridge._enrich = Mock(side_effect=lambda info: info)
+            signer = Mock()
+            bridge._browser = Mock(return_value=signer)
+            with self.subTest(host=host), patch.object(NexusPhpAttendance, '_read_receipt_page',
+                    return_value=(200, html)) as get, patch.object(bridge.engine, 'read_header_reward', return_value=''):
+                result = bridge.perform(site, '签到', Mock())
+                self.assertTrue(result.success, result.message)
+                self.assertEqual((result.engine, result.bonus), ('http', f'{amount} {unit}'))
+                self.assertEqual(get.call_args.args[0], site['url'] + 'attendance.php')
+                get.assert_called_once()
+                signer.sign.assert_not_called()
+
+    def test_unlisted_calendar_history_and_challenge_keep_both_failure_reasons(self):
+        bridge = SignInBridge({'browserless_sites': [], 'read_activity': False})
+        bridge._enrich = Mock(side_effect=lambda info: info)
+        site = {**SITE, 'url': 'https://hhanclub.net/'}
+        for body, reason in [('<div>昨日已签到 已领取</div>', '当日签到回执'),
+                             ('<p>历史回执：这是您的第4次签到，已连续签到2天，本次签到获得5个憨豆。</p>', '回执'),
+                             ('<blockquote><p>这是您的第4次签到，已连续签到2天，本次签到获得5个憨豆。</p></blockquote>', '回执'),
+                             ('<div>昨天已签到</div><button>立即签到</button>', '按钮'),
+                             ('<div class="cf-turnstile"></div>', '人工验证')]:
+            with self.subTest(body=body), patch.object(NexusPhpAttendance, '_read_receipt_page',
+                    return_value=(200, '<a href="/logout.php">退出</a>' + body)) as get:
+                result = bridge.perform(site, '签到', Mock())
+                self.assertFalse(result.success)
+                self.assertIn('白名单', result.message)
+                self.assertIn(reason, result.message)
+                get.assert_called_once()
+        bridge.rules = {'1': {'engine': 'browserless'}}
+        with patch.object(NexusPhpAttendance, '_read_receipt_page') as get:
+            result = bridge.perform(site, '签到', Mock())
+            self.assertFalse(result.success)
+            self.assertIn('白名单', result.message)
+            get.assert_not_called()
+
     def bridge(self, marker=True):
         bridge = SignInBridge({'site_rules': '', 'browserless_url': '', 'read_activity': False})
         bridge._enrich = Mock(side_effect=lambda info: info)

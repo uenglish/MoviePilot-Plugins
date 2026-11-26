@@ -14,6 +14,7 @@ from typing import Any, List, Dict, Tuple, Optional
 from urllib.parse import urljoin
 
 import pytz
+from requests import exceptions as request_errors
 from app import schemas
 from app.core.config import settings
 from app.core.event import eventmanager, Event
@@ -2240,7 +2241,7 @@ class PTSignInKeeper(_PluginBase):
             # 访问链接
             if "attendance.php" in site_url:
                 site_url = urljoin(site_url, "./")
-            logger.info(f"开始站点模拟登录：{site}，地址：{site_url}...")
+            logger.info(f"开始站点模拟登录：{site}")
             if render:
                 page_source = PlaywrightHelper().get_page_source(url=site_url,
                                                                  cookies=site_cookie,
@@ -2252,9 +2253,9 @@ class PTSignInKeeper(_PluginBase):
                                    ua=ua,
                                    proxies=proxies,
                                    timeout=timeout
-                                   ).get_res(url=site_url)
+                                   ).get_res(url=site_url, raise_exception=True)
                 if res is None:
-                    return False, f"模拟登录失败，无法打开网站！"
+                    return False, f"模拟登录失败，未收到 HTTP 响应（站点超时设置 {timeout} 秒）"
                 if under_challenge(res.text):
                     return False, "模拟登录失败，站点被Cloudflare防护，请打开站点浏览器仿真"
                 if res.status_code != 200:
@@ -2270,10 +2271,18 @@ class PTSignInKeeper(_PluginBase):
                 return False, "模拟登录失败，未识别到登录状态"
             logger.info(f"{site} 模拟登录成功")
             return True, "模拟登录成功"
-        except Exception as e:
-            logger.warn("%s 模拟登录失败：%s" % (site, str(e)))
-            traceback.print_exc()
-            return False, f"模拟登录失败：{str(e)}！"
+        except (request_errors.Timeout, TimeoutError):
+            reason = f"请求超时（站点超时设置 {timeout} 秒）"
+        except request_errors.ProxyError:
+            reason = "无法通过站点配置的代理连接"
+        except request_errors.SSLError:
+            reason = "TLS 连接失败，请检查站点证书和网络"
+        except (request_errors.ConnectionError, ConnectionError):
+            reason = "站点连接失败或被中断"
+        except Exception as error:
+            reason = f"请求异常（{type(error).__name__}）"
+        logger.warn(f"{site} 模拟登录失败：{reason}")
+        return False, f"模拟登录失败：{reason}"
 
 
     def stop_service(self):

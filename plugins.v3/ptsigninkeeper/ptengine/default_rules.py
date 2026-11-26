@@ -326,8 +326,7 @@ DEFAULT_RULES: Dict[str, Dict[str, Any]] = {
     "haidan.cc": {
         "engine": "http",
         "method": "GET",
-        # 签到后首页按钮会变成「已经打卡」，所以先读首页判断，再去 signin.php，
-        # 拿不到结论时插件会自动回读首页确认（日志里「未匹配到签到成功标志」就是这么来的）
+        # 首页和签到入口共用站点会话。入口可能仅返回 302，随后从首页读取按钮。
         "path": "/index.php",
         "already_keywords": ["已经打卡", "已打卡"],
         # 站点首页那个 id=modalBtn 的按钮点下去是 jQuery AJAX 打 signin.php，
@@ -337,7 +336,7 @@ DEFAULT_RULES: Dict[str, Dict[str, Any]] = {
         "signin_headers": {"X-Requested-With": "XMLHttpRequest"},
         # 签到成功后按钮会变成 disabled 的 <input value="已经打卡">；属性值不会出现在
         # 可见正文里，显式按 HTML 再匹配一次。
-        "already_html": r'<input\b(?=[^>]*\bvalue=["\']已经打卡["\'])[^>]*>',
+        "already_html": r'<input\b(?=[^>]*\bvalue\s*=\s*["\'](?:已经|已)打卡["\'])[^>]*>',
         "success_keywords": ["已经打卡", "已打卡", "打卡成功", "签到成功"],
     },
     # ---- HDWing（hdwing.org）：NexusPHP plugin_sign-in 插件 ----

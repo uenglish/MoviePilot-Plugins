@@ -20,7 +20,7 @@ from .ptengine.browserless_policy import browserless_site_ids
 from .result import SiteResult
 from .ptengine.core import (
     BrowserlessPool, DEFAULT_BROWSERLESS_URL, account_from_site, account_ready,
-    normalize_host, parse_rules, preset_for_host, resolve_rule, site_module_for, message_bonus,
+    has_custom_rule, normalize_host, parse_rules, preset_for_host, resolve_rule, site_module_for, message_bonus,
 )
 from .ptengine.runtime import RuleEngine
 
@@ -372,7 +372,7 @@ class SignInBridge:
     def route(self, info):
         """User rules and all PT-covered sites use PT; other adapters fill coverage gaps."""
         host = normalize_host(str(info.get('url') or ''))
-        if any(key in self.rules for key in (str(info.get('id')), host, 'www.' + host)):
+        if has_custom_rule(info, self.rules):
             return 'pt', None
         if host == 'yemapt.org':
             from .sites.yema import YemaPT
@@ -430,7 +430,7 @@ class SignInBridge:
                     row = self.engine._sign_one(dict(info, dual=False), self.rules, self._browser(info))
                     result = row_result(row, action)
                     if (not result.success and row.get('browserless_not_started') is True
-                            and not self.stopped and not self._has_custom_rule(info)):
+                            and not self.stopped and not has_custom_rule(info, self.rules)):
                         host = normalize_host(str(info.get('url') or ''))
                         simple_sites = {'hhanclub.net', 'ptsbao.club', 'luckpt.de', 'pt.luckpt.de', 'hdkyl.in', 'dstudio.me'}
                         if host in simple_sites:
@@ -473,11 +473,6 @@ class SignInBridge:
             return SiteResult(info.get('name'), f'{action}失败：执行异常，请查看日志', False)
         finally:
             lock.release()
-
-    def _has_custom_rule(self, info):
-        """自定义规则不自动改用另一套固定站点行为。"""
-        host = normalize_host(str(info.get('url') or ''))
-        return any(key in self.rules for key in (str(info.get('id')), host, 'www.' + host))
 
     @staticmethod
     def _legacy_result(info, action, adapter):
