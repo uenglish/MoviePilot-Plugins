@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { cloneConfig, makeConfig, selection, isAll, toggleSelection, selectVisible, unpackPayload, validateConfig } from '../src/config-model.mjs'
+import { cloneConfig, makeConfig, prepareConfig, selection, isAll, toggleSelection, selectVisible, unpackPayload, validateConfig } from '../src/config-model.mjs'
 
 test('saving edited fields retains unknown options and nested credentials without mutating initialConfig', () => {
   const initial = { enabled: true, future_feature: { mode: 'keep' }, browserless_token: 'fixture-token', consolidation_version: 1 }
@@ -22,6 +22,17 @@ test('selectors recognise all marker and preserve inactive or custom IDs', () =>
   assert.deepEqual(selection('[1,"custom"]'), [1, 'custom'])
   assert.deepEqual(toggleSelection([1, 'saved-site'], '1', false), ['saved-site'])
   assert.deepEqual(selectVisible(['saved-site'], [{ id: 2 }, { id: 3 }], true), ['saved-site', 2, 3])
+})
+
+test('the saved sign-in period distinguishes random, midnight and valid hour windows', () => {
+  for (const [input, saved] of [['   ', ''], [' 1 0 * * * ', '1 0 * * *'], ['2/0-8', '2/0-8']]) {
+    const form = makeConfig({ cron: input })
+    assert.deepEqual(validateConfig(form), {})
+    assert.equal(prepareConfig(form).cron, saved)
+  }
+  for (const cron of ['0', '2/24-24', '2/8-0', '2/0-25']) {
+    assert.ok(validateConfig(makeConfig({ cron })).cron)
+  }
 })
 
 test('filters remove only visible selection and do not discard hidden saved selections', () => {

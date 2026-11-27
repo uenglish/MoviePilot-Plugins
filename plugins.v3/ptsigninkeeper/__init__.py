@@ -31,7 +31,9 @@ from app.utils.site import SiteUtils
 from app.utils.string import StringUtils
 from app.utils.timer import TimerUtils
 from apscheduler.schedulers.background import BackgroundScheduler
+from apscheduler.triggers.combining import OrTrigger
 from apscheduler.triggers.cron import CronTrigger
+from apscheduler.triggers.interval import IntervalTrigger
 from ruamel.yaml import CommentedMap
 
 
@@ -89,7 +91,7 @@ class PTSignInKeeper(_PluginBase):
     # 插件图标
     plugin_icon = "../api/v1/plugin/file/PTSignInKeeper/assets/pt-signin-keeper-v1.webp"
     # 插件版本
-    plugin_version = "1.4.4"
+    plugin_version = "1.4.5"
     # 插件作者
     plugin_author = "serendipity"
     # 作者主页
@@ -130,6 +132,7 @@ class PTSignInKeeper(_PluginBase):
     # 配置属性
     _enabled: bool = False
     _cron: str = ""
+    _main_trigger = None
     _onlyonce: bool = False
     _notify: bool = False
     _queue_cnt: int = 5
@@ -177,7 +180,9 @@ class PTSignInKeeper(_PluginBase):
         # 配置
         if config:
             self._enabled = config.get("enabled")
-            self._cron = config.get("cron")
+            period = config.get("cron")
+            self._cron = "" if period is None else str(period).strip()
+            self._main_trigger = None
             self._onlyonce = config.get("onlyonce")
             self._notify = config.get("notify")
             self._queue_cnt = max(1, min(int(config.get("queue_cnt") or 5), 20))
@@ -409,88 +414,63 @@ class PTSignInKeeper(_PluginBase):
         }] + self._ui_routes()
 
     def get_service(self) -> List[Dict[str, Any]]:
-        """
-        注册插件公共服务
-        [{
-            "id": "服务ID",
-            "name": "服务名称",
-            "trigger": "触发器：cron/interval/date/CronTrigger.from_crontab()",
-            "func": self.xxx,
-            "kwargs": {} # 定时器参数
-        }]
-        """
-        self._start_time = self._end_time = None
-        if not self._sign_sites and not self._login_sites:
+        """向宿主提供主任务。重复查询应返回同一个计划。"""
+        if not self._enabled or not (self._sign_sites or self._login_sites):
             return []
-        if self._enabled and self._cron:
+        if self._main_trigger is None:
+            period = str(self._cron or "").strip()
+            tz = pytz.timezone(settings.TZ)
+            now = datetime.now(tz)
+            self._start_time = self._end_time = None
             try:
-                if len(str(self._cron).split()) == 5:
-                    return [{
-                        "id": "PTSignInKeeper",
-                        "name": "PT 签到管家服务",
-                        "trigger": CronTrigger.from_crontab(self._cron, timezone=settings.TZ),
-                        "func": self.sign_in,
-                        "kwargs": {}
-                    }]
-                else:
-                    # 2.3/9-23
-                    crons = str(self._cron).strip().split("/")
-                    if len(crons) == 2:
-                        # 2.3
-                        cron = crons[0]
-                        # 9-23
-                        times = crons[1].split("-")
-                        if len(times) == 2:
-                            # 9
-                            self._start_time = int(times[0])
-                            # 23
-                            self._end_time = int(times[1])
-                        if self._start_time and self._end_time:
-                            return [{
-                                "id": "PTSignInKeeper",
-                                "name": "PT 签到管家服务",
-                                "trigger": "interval",
-                                "func": self.sign_in,
-                                "kwargs": {
-                                    "hours": float(str(cron).strip()),
-                                }
-                            }]
-                        else:
-                            logger.error("PT 签到管家服务启动失败，周期格式错误")
-                    else:
-                        # 默认0-24 按照周期运行
-                        return [{
-                            "id": "PTSignInKeeper",
-                            "name": "PT 签到管家服务",
-                            "trigger": "interval",
-                            "func": self.sign_in,
-                            "kwargs": {
-                                "hours": float(str(self._cron).strip()),
-                            }
-                        }]
-            except Exception as err:
-                logger.error(f"定时任务配置错误：{str(err)}")
-        elif self._enabled:
-            # 随机时间
-            triggers = TimerUtils.random_scheduler(num_executions=2,
-                                                   begin_hour=9,
-                                                   end_hour=23,
-                                                   max_interval=6 * 60,
-                                                   min_interval=2 * 60)
-            ret_jobs = []
-            for trigger in triggers:
-                ret_jobs.append({
-                    "id": f"PTSignInKeeper|{trigger.hour}:{trigger.minute}",
-                    "name": "PT 签到管家服务",
-                    "trigger": "cron",
-                    "func": self.sign_in,
-                    "kwargs": {
-                        "hour": trigger.hour,
-                        "minute": trigger.minute
-                    }
-                })
-            return ret_jobs
-        return []
+                trigger, plan = self._build_main_trigger(period, tz, now)
+                next_run = trigger.get_next_fire_time(None, now)
+                if next_run is None:
+                    raise ValueError("计划没有下一次触发时间")
+            except (TypeError, ValueError, OverflowError) as err:
+                logger.error(f"签到主任务计划无效（{period}）：{err}")
+                return []
+            self._main_trigger = trigger
+            logger.info(f"签到主任务计划：{plan}，下次触发 {next_run:%Y-%m-%d %H:%M:%S}（{settings.TZ}）")
+        return [{"id": "PTSignInKeeper", "name": "PT 签到管家服务", "trigger": self._main_trigger,
+                 "func": self._scheduled_sign_in, "kwargs": {}}]
+
+    def _build_main_trigger(self, period, tz, now):
+        """根据已保存的执行周期生成主任务触发器和日志说明。"""
+        if not period:
+            times = TimerUtils.random_scheduler(num_executions=2, begin_hour=9, end_hour=23,
+                                                min_interval=2 * 60, max_interval=6 * 60)
+            # 宿主会用 | 之前的 ID 替换旧任务，两个时刻需要注册在同一个触发器上。
+            trigger = OrTrigger([CronTrigger(hour=t.hour, minute=t.minute, timezone=tz) for t in times])
+            return trigger, "每日随机 " + "、".join(t.strftime("%H:%M") for t in times)
+        if len(period.split()) == 5:
+            return CronTrigger.from_crontab(period, timezone=tz), f"Cron {period}"
+
+        amount, separator, window = period.partition("/")
+        interval = timedelta(hours=float(amount))
+        if interval <= timedelta(0):
+            raise ValueError("小时间隔必须大于零")
+        first_run = now + interval
+        if separator:
+            start, end = map(int, window.split("-"))
+            if not (0 <= start <= 23 and start <= end <= 24):
+                raise ValueError("执行时段应为起止小时，例如 0-8 或 9-23")
+            if not start <= first_run.astimezone(tz).hour <= end:
+                opening = CronTrigger(hour=start, minute=0, timezone=tz)
+                first_run = opening.get_next_fire_time(None, first_run)
+            self._start_time, self._end_time = start, end
+        trigger = IntervalTrigger(seconds=interval.total_seconds(), start_date=first_run, timezone=tz)
+        return trigger, f"小时间隔 {period}"
+
+    def _scheduled_sign_in(self):
+        """按主计划触发签到，小时窗口仅约束定时主任务。"""
+        if self._start_time is not None:
+            hour = datetime.now(pytz.timezone(settings.TZ)).hour
+            if not self._start_time <= hour <= self._end_time:
+                logger.info(f"当前 {hour} 点在主任务时段 {self._start_time}-{self._end_time} 点以外，跳过本次调度")
+                return
+        logger.info("签到主任务按执行计划触发")
+        self.sign_in()
 
     def _legacy_form(self) -> Tuple[List[dict], Dict[str, Any]]:
         """
@@ -1778,11 +1758,6 @@ class PTSignInKeeper(_PluginBase):
             self.del_data(key=f"{today.month}月{today.day}日")
             self._clean = False
             self.__update_config()
-        if self._start_time and self._end_time:
-            if int(datetime.today().hour) < self._start_time or int(datetime.today().hour) > self._end_time:
-                logger.error(
-                    f"当前时间 {int(datetime.today().hour)} 不在 {self._start_time}-{self._end_time} 范围内，暂不执行任务")
-                return
         if event:
             logger.info("收到命令，开始站点签到 ...")
             self.post_message(channel=event.event_data.get("channel"),

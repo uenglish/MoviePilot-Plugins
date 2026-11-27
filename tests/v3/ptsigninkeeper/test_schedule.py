@@ -65,6 +65,43 @@ class ScheduleTests(TestCase):
         self.assertIsNone(self.plugin._start_time)
         self.assertIsNone(self.plugin._end_time)
 
+    def test_saved_midnight_cron_and_daily_retry_have_separate_next_firings(self):
+        now = datetime(2026, 11, 27, 0, 34, 53, tzinfo=ZoneInfo('Asia/Shanghai'))
+        with patch(NS + '.settings.TZ', 'Asia/Shanghai'):
+            self.plugin.init_plugin({**self.config, 'cron': ' 1 0 * * * ', 'retry_time': '08:01',
+                                     'onlyonce': False})
+            main = self.plugin.get_service()[0]['trigger']
+            retry = self.plugin._scheduler.get_job('ptsigninkeeper_retry').trigger
+        self.assertEqual(self.plugin.update_config.call_args.args[0]['cron'], '1 0 * * *')
+        self.assertEqual(main.get_next_fire_time(None, now).isoformat(), '2026-11-28T00:01:00+08:00')
+        self.assertEqual(retry.get_next_fire_time(None, now).isoformat(), '2026-11-27T08:01:00+08:00')
+
+    @patch(NS + '.settings.TZ', 'Asia/Shanghai')
+    def test_zero_hour_window_runs_at_midnight_and_allows_independent_retry(self):
+        midnight = datetime(2026, 11, 27, tzinfo=ZoneInfo('Asia/Shanghai'))
+        self.plugin.init_plugin({**self.config, 'cron': '2/0-8', 'onlyonce': False,
+                                 'retry_time': '19:00'})
+        with patch(NS + '.datetime', wraps=datetime) as clock, patch.object(self.plugin, 'sign_in') as sign:
+            clock.now.return_value = midnight.replace(hour=19)
+            job = self.plugin.get_service()[0]
+            self.assertEqual(job['trigger'].get_next_fire_time(None, clock.now.return_value).isoformat(),
+                             '2026-11-28T00:00:00+08:00')
+            job['func']()
+            sign.assert_not_called()
+            self.plugin._scheduler.get_job('ptsigninkeeper_retry').func()
+            sign.assert_called_once()
+            clock.now.return_value = midnight
+            job['func']()
+            self.assertEqual(sign.call_count, 2)
+
+    def test_invalid_intervals_do_not_register(self):
+        for period in ('0', '-2', '2/24-24', '2/8-0', '2/0-25'):
+            with self.subTest(period=period):
+                self.plugin.init_plugin({**self.config, 'cron': period, 'onlyonce': False})
+                with patch(NS + '.logger') as log:
+                    self.assertEqual(self.plugin.get_service(), [])
+                    self.assertIn('签到主任务计划无效', log.error.call_args.args[0])
+
     def test_u2_midnight_pending_runs_again_after_opening_and_then_deduplicates(self):
         self.site.update(url=u2.BASE, name='幼儿园')
         self.plugin._bridge = SimpleNamespace(stopped=False, stop=Mock())

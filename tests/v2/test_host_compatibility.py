@@ -1,12 +1,17 @@
 """V2 host boundaries: module discovery, notifications and configured AI."""
 import asyncio
 import importlib
+from datetime import datetime, timedelta
 from pathlib import Path
+from threading import RLock
 from types import SimpleNamespace
 import unittest
 from unittest.mock import AsyncMock, Mock, patch
+from zoneinfo import ZoneInfo
 
+from apscheduler.schedulers.background import BackgroundScheduler
 from app.core.config import settings
+from app.core.plugin import PluginManager
 from app.plugins import _PluginBase as HostPluginBase
 from app.plugins.ptsigninkeeper import PTSignInKeeper
 from app.plugins.ptinvitekeeper import PTInviteKeeper
@@ -14,9 +19,39 @@ from app.plugins.ptsigninkeeper.host_ai import LLMHelper
 from app.plugins.ptsigninkeeper.host_compat import NotificationBlock, NotificationContent
 from app.plugins.ptsigninkeeper.ptengine.http import _LegacySdkSession, new_http_session
 from app.plugins.ptsigninkeeper.ptengine.quiz import AssistantSolver
+from app.scheduler import Scheduler
 
 
 class HostCompatibilityTests(unittest.TestCase):
+    def test_v2_host_retains_both_random_firings_and_replaces_them_on_reload(self):
+        pid = 'PTSignInKeeper'
+        tz = ZoneInfo('Asia/Shanghai')
+        today = datetime(2026, 11, 27, tzinfo=tz)
+        first, second = today.replace(hour=11, minute=13), today.replace(hour=16, minute=47)
+        plugin = object.__new__(PTSignInKeeper)
+        plugin._enabled, plugin._sign_sites, plugin._cron = True, ['all'], '  '
+        host = object.__new__(Scheduler)
+        host._jobs, host._lock = {}, RLock()
+        host._scheduler = BackgroundScheduler(timezone=tz)
+        host._scheduler.start(paused=True)
+        self.addCleanup(host._scheduler.shutdown)
+        with patch.dict(PluginManager()._running_plugins, {pid: plugin}), \
+             patch.object(settings, 'TZ', 'Asia/Shanghai'), \
+             patch('app.plugins.ptsigninkeeper.TimerUtils.random_scheduler',
+                   return_value=[first, second]) as random_times:
+            for _ in range(2):
+                host.update_plugin_job(pid)
+                jobs = host._scheduler.get_jobs()
+                self.assertEqual(len(jobs), 1)
+                trigger = jobs[0].trigger
+                self.assertEqual(trigger.get_next_fire_time(None, today), first)
+                self.assertEqual(trigger.get_next_fire_time(first, first), second)
+                self.assertEqual(trigger.get_next_fire_time(second, second), first + timedelta(days=1))
+            random_times.assert_called_once()
+            plugin._enabled = False
+            host.update_plugin_job(pid)
+            self.assertEqual(host._scheduler.get_jobs(), [])
+
     def test_every_site_module_imports_on_real_v2(self):
         for name in ('ptsigninkeeper', 'ptinvitekeeper'):
             plugin = importlib.import_module('app.plugins.' + name)

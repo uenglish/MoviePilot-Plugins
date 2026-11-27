@@ -59,6 +59,7 @@ export function browserlessSites(values) {
 export function prepareConfig(config, kind = PLUGIN_KIND) {
   const saved = cloneConfig(config)
   if (kind === 'signin') {
+    saved.cron = String(config.cron ?? '').trim()
     saved.browserless_tokens = browserlessTokens(saved)
     saved.browserless_sites = browserlessSites(saved.browserless_sites)
     for (const key of LEGACY_TOKEN_KEYS) delete saved[key]
@@ -99,9 +100,17 @@ export function unpackPayload(payload) {
 
 export function validateConfig(config, kind = PLUGIN_KIND) {
   const errors = {}
-  const cron = String(config.cron || '').trim()
-  if (cron && cron.split(/\s+/).length !== 5 && !(kind === 'signin' && /^\d+(?:\.\d+)?(?:\/(?:\d{1,2})-(?:\d{1,2}))?$/.test(cron))) {
-    errors.cron = kind === 'signin' ? '填写 5 段 Cron，或小时周期，例如 2.3/9-23' : '填写 5 段 Cron，例如 0 9 * * *'
+  const cron = String(config.cron ?? '').trim()
+  if (cron && cron.split(/\s+/).length !== 5) {
+    const interval = kind === 'signin' && /^(\d+(?:\.\d+)?)(?:\/(\d{1,2})-(\d{1,2}))?$/.exec(cron)
+    if (!interval) {
+      errors.cron = kind === 'signin' ? '填写 5 段 Cron，或小时周期，例如 2.3/9-23' : '填写 5 段 Cron，例如 0 9 * * *'
+    } else if (!Number.isFinite(Number(interval[1])) || Number(interval[1]) <= 0) {
+      errors.cron = '小时间隔必须大于零'
+    } else if (interval[2] !== undefined) {
+      const start = Number(interval[2]), end = Number(interval[3])
+      if (start > 23 || end > 24 || start > end) errors.cron = '填写有效的起止小时，例如 0-8 或 9-23'
+    }
   }
   if (kind === 'signin') {
     if ((config.enabled || config.onlyonce) && !selection(config.sign_sites).length && !selection(config.login_sites).length) {
